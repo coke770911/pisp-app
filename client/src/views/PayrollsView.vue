@@ -10,6 +10,7 @@ import {
   importPayrolls,
   confirmMonth,
   reopenMonth,
+  deletePayrollMonth,
   copyPayrolls,
   deletePayroll,
   downloadPayrollExport,
@@ -108,6 +109,7 @@ const importing = ref(false);
 const copying = ref(false);
 const confirming = ref(false);
 const reopening = ref(false);
+const deletingMonth = ref(false);
 /** @type {import('vue').Ref<number | null>} */
 const deletingId = ref(null);
 const downloadingPrev = ref(false);
@@ -115,7 +117,13 @@ const downloadingCur = ref(false);
 const downloadingReport = ref(false);
 
 const busy = computed(
-  () => importing.value || copying.value || confirming.value || reopening.value || deletingId.value !== null,
+  () =>
+    importing.value ||
+    copying.value ||
+    confirming.value ||
+    reopening.value ||
+    deletingMonth.value ||
+    deletingId.value !== null,
 );
 const isConfirmed = computed(() => status.value === 'confirmed');
 
@@ -536,6 +544,39 @@ async function onReopen() {
   }
 }
 
+/**
+ * 刪除本月全部明細（以便重新匯入）。需輸入年月代碼（例 11509）確認。
+ * @returns {Promise<void>}
+ */
+async function onDeleteMonth() {
+  if (deletingMonth.value || busy.value || isConfirmed.value || status.value === 'none') return;
+  if (!(await confirmDiscardEditor())) return;
+  const y = year.value;
+  const m = month.value;
+  const code = `${y}${String(m).padStart(2, '0')}`;
+  const ok = await askConfirm({
+    title: '刪除本月明細',
+    message: `將刪除 ${curLabel.value} 全部 ${formatNumber(payrolls.value.length)} 位人員的明細與薪資加項，刪除後無法復原（可先「下載本月資料」備份）。刪除後可重新上傳明細或沿用上個月資料。請輸入 ${code} 以確認。`,
+    confirmText: '刪除',
+    danger: true,
+    requireText: code,
+  });
+  if (!ok) return;
+  deletingMonth.value = true;
+  try {
+    editor.value = null;
+    editorDirty.value = false;
+    importResult.value = null;
+    const res = await deletePayrollMonth(y, m);
+    toast(`已刪除 ${res.year} 年 ${res.month} 月明細 ${formatNumber(res.deleted)} 人`, 'success');
+    await reloadCurrent();
+  } catch (err) {
+    toast(errorMessage(err), 'error');
+  } finally {
+    deletingMonth.value = false;
+  }
+}
+
 /* ---------- 人員 ---------- */
 
 /**
@@ -694,6 +735,15 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" class="btn" :disabled="busy || loading || isConfirmed" @click="openEditor({ mode: 'new' })">
           ＋ 新增人員
+        </button>
+        <button
+          type="button"
+          class="btn btn-danger-outline"
+          :disabled="busy || loading || isConfirmed || status === 'none'"
+          :title="isConfirmed ? '已確認的月份需先「重新開啟編輯」才能刪除' : ''"
+          @click="onDeleteMonth"
+        >
+          {{ deletingMonth ? '刪除中…' : '刪除本月明細' }}
         </button>
       </div>
       <div class="toolbar-group">

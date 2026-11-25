@@ -17,6 +17,7 @@ import {
   StatusResultSchema,
   BracketSchema,
   BracketYearDeleteResultSchema,
+  PayrollMonthDeleteResultSchema,
   OkResultSchema,
   CopyResultSchema,
 } from './schemas.js';
@@ -25,6 +26,7 @@ import { pad2 } from '../utils/format.js';
 const OkSchema = OkResultSchema;
 /** @typedef {import('./schemas.js').BracketYearDeleteResult} BracketYearDeleteResult */
 /** @typedef {import('./schemas.js').CopyResult} CopyResult */
+/** @typedef {import('./schemas.js').PayrollMonthDeleteResult} PayrollMonthDeleteResult */
 
 /** @typedef {import('./schemas.js').User} User */
 /** @typedef {import('./schemas.js').Role} Role */
@@ -322,6 +324,20 @@ export function confirmMonth(year, month) {
  */
 export function reopenMonth(year, month) {
   return requestJson('/api/payrolls/reopen', StatusResultSchema, { method: 'POST', json: { year, month } });
+}
+
+/**
+ * 刪除整月明細（已確認月份回 409，需先重新開啟）。
+ * @param {number} year
+ * @param {number} month
+ * @returns {Promise<PayrollMonthDeleteResult>}
+ */
+export function deletePayrollMonth(year, month) {
+  return requestJson(
+    `/api/payrolls?year=${encodeURIComponent(String(year))}&month=${encodeURIComponent(String(month))}`,
+    PayrollMonthDeleteResultSchema,
+    { method: 'DELETE' },
+  );
 }
 
 /**

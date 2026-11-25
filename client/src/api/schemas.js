@@ -70,6 +70,9 @@ export const BracketImportResultSchema = z.object({ year: int, count: int });
 export const BracketYearDeleteResultSchema = z.object({ year: int, deleted: int });
 /** @typedef {z.infer<typeof BracketYearDeleteResultSchema>} BracketYearDeleteResult */
 
+export const PayrollMonthDeleteResultSchema = z.object({ year: int, month: int, deleted: int });
+/** @typedef {z.infer<typeof PayrollMonthDeleteResultSchema>} PayrollMonthDeleteResult */
+
 export const OkResultSchema = z.object({ ok: z.boolean() }).passthrough();
 
 export const InsuranceTypeSchema = z.enum(['勞健', '公健']);

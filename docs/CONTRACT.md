@@ -142,6 +142,7 @@ body `{ account, password, captchaId, captchaCode }`（zod 驗證；格式錯誤
 | POST | `/api/payrolls/copy` | body `{ fromYear, fromMonth, toYear, toMonth }`：把來源月份（不限狀態）所有人員與加項複製成目標月份 draft；目標月份已 confirmed 回 409；目標已有 draft 資料時需 body `overwrite: true` 否則 409 `{ message: '目標月份已有資料' }`；來源無資料 404 → `{ year, month, count }` |
 | POST | `/api/payrolls` | 新增單一人員 body `{ year, month, employee_no, name, id_number, birthday, insurance_type, base_salary, pension_rate, items }`；該月 confirmed 回 409；同月身分證號重複回 409「本月已有此身分證號的人員」、職員編號與他人重複回 409「職員編號已被其他人員使用」 → 回傳 Payroll（source_order 取該月最大值 +1） |
 | DELETE | `/api/payrolls/:id` | 刪除單一人員（含加項）；該月 confirmed 回 409 → `{ ok: true }` |
+| DELETE | `/api/payrolls?year=115&month=9` | 刪除整月明細（含加項），以便重新匯入；該月無資料 404、confirmed 回 409（需先 reopen）→ `{ year, month, deleted }`（刪除人數） |
 | POST | `/api/payrolls/confirm` | body `{ year, month }` → 條件更新 draft→confirmed（已 confirmed 也回 200，冪等）→ `{ status: 'confirmed' }` |
 | POST | `/api/payrolls/reopen` | body `{ year, month }` → confirmed→draft → `{ status: 'draft' }` |
 | GET | `/api/reports/split?year=115&month=9` | 下載拆帳報表 xlsx，檔名 `拆帳報表_115年09月.xlsx` |

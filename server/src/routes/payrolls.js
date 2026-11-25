@@ -242,6 +242,22 @@ payrollsRouter.get('/', async (req, res) => {
   res.json({ year, month, status, payrolls });
 });
 
+/**
+ * 刪除整月明細（以便重新匯入）。已確認的月份需先重新開啟 → 409。
+ * 無資料 → 404。交易內先查狀態再刪，避免與確認操作競態。
+ */
+payrollsRouter.delete('/', async (req, res) => {
+  const { year, month } = parseInput(yearMonthSchema, req.query, '請指定正確的年度與月份');
+  const deleted = await sequelize.transaction(async (t) => {
+    const total = await MonthlyPayroll.count({ where: { roc_year: year, month }, transaction: t });
+    if (total === 0) throw new HttpError(404, `${year} 年 ${pad2(month)} 月沒有資料`);
+    if ((await getMonthStatus(year, month, t)) === 'confirmed') throw new HttpError(409, CONFIRMED_MESSAGE);
+    await deleteMonth(year, month, t);
+    return total;
+  });
+  res.json({ year, month, deleted });
+});
+
 payrollsRouter.post('/', async (req, res) => {
   const data = parseInput(
     createSchema,
