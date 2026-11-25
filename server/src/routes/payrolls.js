@@ -6,7 +6,7 @@
 import { Router } from 'express';
 import { Op, UniqueConstraintError } from 'sequelize';
 import { z } from 'zod';
-import { MonthlyPayroll, MonthlyPayrollItem, PAYROLL_STATUS, sequelize } from '../models/index.js';
+import { MonthlyPayroll, MonthlyPayrollItem, PAYROLL_STATUS, normalizeIdNumber, sequelize } from '../models/index.js';
 import { uploadXlsx } from '../middleware/upload.js';
 import { buildPayrollWorkbook, parsePayrollWorkbook } from '../services/excel.js';
 import { deleteMonth, getMonthStatus, loadMonthPayrolls, loadPayrollById } from '../services/payrollService.js';
@@ -15,6 +15,8 @@ import { PENSION_RATE_MAX, PENSION_RATE_MIN } from '../../../shared/splitCalc.js
 
 const CONFIRMED_MESSAGE = '該月份已確認，無法修改；如需修改請先重新開啟';
 const BUSY_MESSAGE = '資料正在由其他操作處理中，請稍後重試';
+const DUP_ID_NUMBER_MESSAGE = '本月已有此身分證號的人員';
+const DUP_EMPLOYEE_NO_MESSAGE = '職員編號已被其他人員使用';
 
 const yearMonthBodySchema = z.object({
   year: z.number().int().min(1).max(999),
@@ -24,9 +26,17 @@ const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
 const intAmount = z.number().int().min(-2_000_000_000).max(2_000_000_000);
 /** 勞退自提率（%）：0~6 整數 */
 const pensionRateSchema = z.number().int().min(PENSION_RATE_MIN).max(PENSION_RATE_MAX);
+/** 職員編號：必填、≤ 20（可修改，同月不得與他人重複） */
+const employeeNoSchema = z.string().trim().min(1).max(20);
+/** 身分證號：必填、trim + 大寫、≤ 20（人員識別鍵） */
+const idNumberSchema = z
+  .string()
+  .transform((s) => normalizeIdNumber(s))
+  .pipe(z.string().min(1).max(20));
+/** PUT 可修改欄位（身分證號為識別鍵不可修改；body 帶了也會被忽略） */
 const updateSchema = z.object({
+  employee_no: employeeNoSchema,
   name: z.string().trim().max(50),
-  id_number: z.string().trim().max(20),
   birthday: z.string().trim().max(20),
   base_salary: intAmount,
   insurance_type: z.union([z.literal('勞健'), z.literal('公健')]),
@@ -44,7 +54,7 @@ const updateSchema = z.object({
 const createSchema = updateSchema.extend({
   year: z.number().int().min(1).max(999),
   month: z.number().int().min(1).max(12),
-  employee_no: z.string().trim().min(1).max(20),
+  id_number: idNumberSchema,
   // POST 未帶時為 0
   pension_rate: pensionRateSchema.default(0),
 });
@@ -79,39 +89,32 @@ const copySchema = z.object({
  */
 async function insertPersons(year, month, persons, t) {
   if (persons.length === 0) return;
-  await MonthlyPayroll.bulkCreate(
-    persons.map((p) => ({
-      roc_year: year,
-      month,
-      employee_no: p.employee_no,
-      name: p.name,
-      id_number: p.id_number,
-      birthday: p.birthday,
-      insurance_type: p.insurance_type,
-      base_salary: p.base_salary,
-      pension_rate: p.pension_rate,
-      status: PAYROLL_STATUS.DRAFT,
-      source_order: p.source_order,
-    })),
-    { transaction: t },
-  );
-  // 重新讀回 id（各資料庫 bulkCreate 回傳 id 的行為不一致）
-  const created = await MonthlyPayroll.findAll({
-    where: { roc_year: year, month },
-    attributes: ['id', 'employee_no'],
-    transaction: t,
-  });
-  /** @type {Map<string, number>} */
-  const idMap = new Map(created.map((r) => [r.get({ plain: true }).employee_no, r.get({ plain: true }).id]));
-  const items = persons.flatMap((p) => {
-    const payrollId = /** @type {number} */ (idMap.get(p.employee_no));
-    return p.items.map((it, i) => ({
-      payroll_id: payrollId,
-      source_name: it.source_name,
-      amount: it.amount,
-      sort_order: i + 1,
-    }));
-  });
+  /** @type {{ payroll_id: number, source_name: string, amount: number, sort_order: number }[]} */
+  const items = [];
+  // 逐筆建立以直接取得 id（不依賴 bulkCreate 回傳 id，也不以業務鍵回查對應，
+  // 避免舊資料庫尚有重複身分證號時加項對錯人）
+  for (const p of persons) {
+    const row = await MonthlyPayroll.create(
+      {
+        roc_year: year,
+        month,
+        employee_no: p.employee_no,
+        name: p.name,
+        id_number: normalizeIdNumber(p.id_number),
+        birthday: p.birthday,
+        insurance_type: p.insurance_type,
+        base_salary: p.base_salary,
+        pension_rate: p.pension_rate,
+        status: PAYROLL_STATUS.DRAFT,
+        source_order: p.source_order,
+      },
+      { transaction: t },
+    );
+    const payrollId = row.get({ plain: true }).id;
+    p.items.forEach((it, i) => {
+      items.push({ payroll_id: payrollId, source_name: it.source_name, amount: it.amount, sort_order: i + 1 });
+    });
+  }
   if (items.length > 0) await MonthlyPayrollItem.bulkCreate(items, { transaction: t });
 }
 
@@ -240,15 +243,24 @@ payrollsRouter.get('/', async (req, res) => {
 });
 
 payrollsRouter.post('/', async (req, res) => {
-  const data = parseInput(createSchema, req.body, '輸入資料格式錯誤：職員編號必填、本薪與金額必須為整數、勞退自提須為 0~6 的整數');
+  const data = parseInput(
+    createSchema,
+    req.body,
+    '輸入資料格式錯誤：職員編號與身分證號必填（20 字內）、本薪與金額必須為整數、勞退自提須為 0~6 的整數',
+  );
   const created = await sequelize
     .transaction(async (t) => {
       if ((await getMonthStatus(data.year, data.month, t)) === 'confirmed') throw new HttpError(409, CONFIRMED_MESSAGE);
-      const dup = await MonthlyPayroll.count({
+      const dupId = await MonthlyPayroll.count({
+        where: { roc_year: data.year, month: data.month, id_number: data.id_number },
+        transaction: t,
+      });
+      if (dupId > 0) throw new HttpError(409, DUP_ID_NUMBER_MESSAGE);
+      const dupEmp = await MonthlyPayroll.count({
         where: { roc_year: data.year, month: data.month, employee_no: data.employee_no },
         transaction: t,
       });
-      if (dup > 0) throw new HttpError(409, '該月份已有相同職員編號');
+      if (dupEmp > 0) throw new HttpError(409, DUP_EMPLOYEE_NO_MESSAGE);
       const last = await MonthlyPayroll.findOne({
         where: { roc_year: data.year, month: data.month },
         order: [['source_order', 'DESC']],
@@ -280,7 +292,8 @@ payrollsRouter.post('/', async (req, res) => {
       }
       return loadPayrollById(id, t);
     })
-    .catch(rethrowUnique('該月份已有相同職員編號'));
+    // 併發下撞唯一索引 (roc_year, month, id_number) 仍回 409
+    .catch(rethrowUnique(DUP_ID_NUMBER_MESSAGE));
   res.status(201).json(created);
 });
 
@@ -302,19 +315,34 @@ payrollsRouter.delete('/:id', async (req, res) => {
 
 payrollsRouter.put('/:id', async (req, res) => {
   const { id } = parseInput(idParamSchema, req.params, '無效的人員編號');
-  const data = parseInput(updateSchema, req.body, '輸入資料格式錯誤：本薪與金額必須為整數，薪資來源為必填（50 字內），勞退自提須為 0~6 的整數');
+  // updateSchema 不含 id_number：身分證號為識別鍵不可修改，body 帶了也會被 zod 剔除
+  const data = parseInput(
+    updateSchema,
+    req.body,
+    '輸入資料格式錯誤：職員編號必填（20 字內），本薪與金額必須為整數，薪資來源為必填（50 字內），勞退自提須為 0~6 的整數',
+  );
 
   const updated = await sequelize.transaction(async (t) => {
     const row = await MonthlyPayroll.findByPk(id, { transaction: t });
     if (!row) throw new HttpError(404, '找不到此人員資料');
-    const status = await getMonthStatus(row.get({ plain: true }).roc_year, row.get({ plain: true }).month, t);
+    const current = row.get({ plain: true });
+    const status = await getMonthStatus(current.roc_year, current.month, t);
     if (status === 'confirmed') throw new HttpError(409, CONFIRMED_MESSAGE);
 
-    // 條件更新：僅限 draft 狀態；pension_rate 未帶時不更新（保留原值）
+    // 職員編號可修改，但同月不得與他人重複（應用層檢查）
+    if (data.employee_no !== current.employee_no) {
+      const dupEmp = await MonthlyPayroll.count({
+        where: { roc_year: current.roc_year, month: current.month, employee_no: data.employee_no, id: { [Op.ne]: id } },
+        transaction: t,
+      });
+      if (dupEmp > 0) throw new HttpError(409, DUP_EMPLOYEE_NO_MESSAGE);
+    }
+
+    // 條件更新：僅限 draft 狀態；pension_rate 未帶時不更新（保留原值）；id_number 不更新
     const [affected] = await MonthlyPayroll.update(
       {
+        employee_no: data.employee_no,
         name: data.name,
-        id_number: data.id_number,
         birthday: data.birthday,
         base_salary: data.base_salary,
         insurance_type: data.insurance_type,
@@ -332,6 +360,6 @@ payrollsRouter.put('/:id', async (req, res) => {
       );
     }
     return loadPayrollById(id, t);
-  });
+  }).catch(rethrowUnique(BUSY_MESSAGE));
   res.json(updated);
 });

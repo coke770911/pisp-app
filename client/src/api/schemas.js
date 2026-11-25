@@ -8,10 +8,45 @@ import { z } from 'zod';
 /** 寬鬆整數：後端可能回傳數字字串，統一轉為整數 */
 const int = z.coerce.number().int();
 
-export const ErrorBodySchema = z.object({ message: z.string() });
+/** 錯誤回應：`{ message, code? }`（code 例：CAPTCHA_INVALID、INVALID_CREDENTIALS） */
+export const ErrorBodySchema = z.object({ message: z.string(), code: z.string().optional() });
 
-export const UserSchema = z.object({ username: z.string() });
+/** 系統角色 */
+export const RoleSchema = z.enum(['admin', 'user']);
+/** @typedef {z.infer<typeof RoleSchema>} Role */
+
+/** 目前登入者（/api/auth/login、/api/auth/me） */
+export const UserSchema = z.object({
+  account: z.string(),
+  displayName: z.string().nullable().optional().transform((v) => v ?? ''),
+  role: RoleSchema,
+});
 /** @typedef {z.infer<typeof UserSchema>} User */
+
+/** 驗證碼（/api/auth/captcha） */
+export const CaptchaSchema = z.object({
+  captchaId: z.string().min(1),
+  image: z.string().startsWith('data:image/'),
+});
+/** @typedef {z.infer<typeof CaptchaSchema>} Captcha */
+
+/** 布林：容許資料庫回傳 0/1 */
+const bool = z.union([z.boolean(), z.number()]).transform((v) => Boolean(v));
+
+/** 系統帳號（/api/users） */
+export const SystemUserSchema = z.object({
+  id: int,
+  account: z.string(),
+  display_name: z.string().nullable().optional().transform((v) => v ?? ''),
+  role: RoleSchema,
+  is_active: bool,
+  created_by: z.string().nullable().optional().transform((v) => v ?? ''),
+  last_login_at: z.string().nullable().optional().transform((v) => v ?? null),
+  createdAt: z.string().nullable().optional().transform((v) => v ?? null),
+});
+/** @typedef {z.infer<typeof SystemUserSchema>} SystemUser */
+
+export const SystemUserListSchema = z.array(SystemUserSchema);
 
 export const BracketSchema = z.object({
   id: int.optional(),
@@ -58,6 +93,7 @@ export const PayrollSchema = z.object({
   month: int,
   employee_no: z.string(),
   name: z.string(),
+  /** 身分證號 = 人員識別鍵（後端已 trim + 大寫、不可修改）；容許舊資料缺值，前端比對時退回以職員編號配對 */
   id_number: z.string().nullable().optional(),
   birthday: z.string().nullable().optional(),
   insurance_type: InsuranceTypeSchema,

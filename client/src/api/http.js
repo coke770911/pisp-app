@@ -13,12 +13,15 @@ export class ApiError extends Error {
   /**
    * @param {number} status
    * @param {string} message
+   * @param {string | null} [code] 後端回應的錯誤代碼（例：CAPTCHA_INVALID）；無則 null
    */
-  constructor(status, message) {
+  constructor(status, message, code = null) {
     super(message);
     this.name = 'ApiError';
     /** @type {number} */
     this.status = status;
+    /** @type {string | null} */
+    this.code = code;
   }
 }
 
@@ -43,19 +46,24 @@ export function setUnauthorizedHandler(handler) {
 }
 
 /**
- * 從錯誤回應取出後端訊息；無法解析時回預設訊息。
+ * 從錯誤回應取出後端訊息與錯誤代碼；無法解析時回預設訊息。
  * @param {Response} res
- * @returns {Promise<string>}
+ * @returns {Promise<{ message: string, code: string | null }>}
  */
-async function readErrorMessage(res) {
+async function readErrorBody(res) {
+  /** @type {string | null} */
+  let code = null;
   try {
     const body = /** @type {unknown} */ (await res.json());
     const parsed = ErrorBodySchema.safeParse(body);
-    if (parsed.success && parsed.data.message) return parsed.data.message;
+    if (parsed.success) {
+      code = parsed.data.code ?? null;
+      if (parsed.data.message) return { message: parsed.data.message, code };
+    }
   } catch {
     // 回應不是 JSON，使用預設訊息
   }
-  return res.status === 401 ? '登入逾時，請重新登入' : SERVICE_UNAVAILABLE_MESSAGE;
+  return { message: res.status === 401 ? '登入逾時，請重新登入' : SERVICE_UNAVAILABLE_MESSAGE, code };
 }
 
 /**
@@ -90,11 +98,11 @@ async function send(path, options = {}) {
   }
 
   if (!res.ok) {
-    const message = await readErrorMessage(res);
+    const { message, code } = await readErrorBody(res);
     if (res.status === 401 && options.skipAuthRedirect !== true && unauthorizedHandler) {
       unauthorizedHandler();
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code);
   }
   return res;
 }

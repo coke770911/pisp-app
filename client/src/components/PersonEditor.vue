@@ -4,13 +4,15 @@ import { ref, computed, watch, nextTick, onMounted } from 'vue';
 import { computeSplit, normalizePensionRate, PENSION_RATE_MIN, PENSION_RATE_MAX } from '@shared/splitCalc.js';
 import SplitStepTable from './SplitStepTable.vue';
 import { updatePayroll, createPayroll } from '../api/index.js';
-import { errorMessage } from '../api/http.js';
+import { ApiError, errorMessage } from '../api/http.js';
+import { normalizeIdNumber } from '../utils/compare.js';
 import { formatNumber, toInt } from '../utils/format.js';
 import { toast } from '../stores/dialog.js';
 
 /** @typedef {import('../api/schemas.js').Payroll} Payroll */
 /** @typedef {import('../api/schemas.js').InsuranceType} InsuranceType */
 /** @typedef {import('../api/index.js').PayrollUpdateBody} PayrollUpdateBody */
+/** @typedef {import('../api/index.js').PayrollCreateBody} PayrollCreateBody */
 /** @typedef {import('@shared/splitCalc.js').Bracket} Bracket */
 
 /**
@@ -107,6 +109,8 @@ function draftFromPayroll(p) {
 /** @type {import('vue').Ref<Draft>} */
 const draft = ref(draftFromPayroll(props.payroll));
 const saving = ref(false);
+/** 最近一次儲存的衝突訊息（409，例：職員編號已被其他人員使用） */
+const conflictMessage = ref('');
 /** @type {import('vue').Ref<HTMLElement | null>} */
 const itemsBody = ref(null);
 /** @type {import('vue').Ref<HTMLInputElement | null>} */
@@ -116,14 +120,14 @@ const firstInput = ref(null);
 const locked = computed(() => props.readonly || saving.value);
 
 /**
- * 正規化草稿為送出格式。
+ * 正規化草稿為 PUT 送出格式（不含身分證號：身分證號為識別鍵，不可修改）。
  * @param {Draft} d
  * @returns {PayrollUpdateBody}
  */
 function normalize(d) {
   return {
+    employee_no: d.employee_no.trim(),
     name: d.name.trim(),
-    id_number: d.id_number.trim(),
     birthday: d.birthday.trim(),
     base_salary: toInt(d.base_salary) ?? 0,
     insurance_type: d.insurance_type,
@@ -164,13 +168,16 @@ const validationErrors = computed(() => {
   /** @type {string[]} */
   const errs = [];
   if (isNew.value) {
-    const no = d.employee_no.trim();
-    if (no === '') errs.push('請輸入職員編號');
-    else if (no.length > 20) errs.push('職員編號不可超過 20 字');
+    // 身分證號為識別鍵，僅新增時輸入
+    const idNo = normalizeIdNumber(d.id_number);
+    if (idNo === '') errs.push('請輸入身分證號');
+    else if (idNo.length > 20) errs.push('身分證號不可超過 20 字');
   }
+  const no = d.employee_no.trim();
+  if (no === '') errs.push('請輸入職員編號');
+  else if (no.length > 20) errs.push('職員編號不可超過 20 字');
   if (d.name.trim() === '') errs.push('請輸入姓名');
   else if (d.name.trim().length > 50) errs.push('姓名不可超過 50 字');
-  if (d.id_number.trim().length > 20) errs.push('身份證號不可超過 20 字');
   if (d.birthday.trim().length > 20) errs.push('生日不可超過 20 字');
   const base = toInt(d.base_salary);
   if (base === null) errs.push('本薪必須為整數');
@@ -199,6 +206,14 @@ const split = computed(() => computeSplit(normalize(draft.value), props.sortedBr
 const lastStep = computed(() => {
   const s = split.value.steps;
   return s.length > 0 ? s[s.length - 1] : null;
+});
+
+/** 上月職員編號與本月（已存檔）不同時，回傳上月職員編號；否則 null */
+const previousEmployeeNoChanged = computed(() => {
+  const prev = props.previous;
+  const cur = props.payroll;
+  if (!prev || !cur) return null;
+  return prev.employee_no.trim() !== cur.employee_no.trim() ? prev.employee_no : null;
 });
 
 /** 上月加項（依 sort_order） */
@@ -264,18 +279,28 @@ async function onSave() {
     return;
   }
   saving.value = true;
+  conflictMessage.value = '';
   try {
     const body = normalize(draft.value);
     const current = props.payroll;
-    const saved = current
-      ? await updatePayroll(current.id, body)
-      : await createPayroll(props.year, props.month, draft.value.employee_no.trim(), body);
+    /** @type {Payroll} */
+    let saved;
+    if (current) {
+      saved = await updatePayroll(current.id, body);
+    } else {
+      /** @type {PayrollCreateBody} */
+      const createBody = { ...body, id_number: normalizeIdNumber(draft.value.id_number) };
+      saved = await createPayroll(props.year, props.month, createBody);
+    }
     // 先同步草稿再通知父層，避免父層判斷為未儲存
     draft.value = draftFromPayroll(saved);
     emit('saved', saved, current === null);
     toast(`${current ? '已儲存' : '已新增'} ${saved.employee_no} ${saved.name}`, 'success');
   } catch (err) {
-    toast(errorMessage(err), 'error');
+    const msg = errorMessage(err);
+    // 409：職員編號／身分證號重複或月份已確認，訊息保留於表單上方
+    if (err instanceof ApiError && err.status === 409) conflictMessage.value = msg;
+    toast(msg, 'error');
   } finally {
     saving.value = false;
   }
@@ -293,7 +318,7 @@ defineExpose({ isDirty });
     <div class="editor-head">
       <h3 class="editor-title">
         <template v-if="isNew">新增人員（{{ year }} 年 {{ month }} 月）</template>
-        <template v-else>{{ draft.employee_no }}　{{ payroll?.name }}</template>
+        <template v-else>{{ payroll?.employee_no }}　{{ payroll?.name }}</template>
         <span v-if="isDirty && !isNew" class="tag tag-dirty">未儲存</span>
         <span v-if="readonly" class="tag tag-confirmed">已確認（唯讀）</span>
       </h3>
@@ -302,13 +327,14 @@ defineExpose({ isDirty });
 
     <div class="editor-grid editor-grid-basic">
       <label class="field">
-        <span class="field-label">職員編號{{ isNew ? '' : '（不可修改）' }}</span>
+        <span class="field-label">職員編號</span>
         <input
           ref="firstInput"
           v-model="draft.employee_no"
           class="input"
+          :class="{ invalid: draft.employee_no.trim() === '' }"
           maxlength="20"
-          :readonly="!isNew"
+          autocomplete="off"
           :disabled="locked"
         />
       </label>
@@ -317,8 +343,17 @@ defineExpose({ isDirty });
         <input v-model="draft.name" class="input" maxlength="50" :disabled="locked" />
       </label>
       <label class="field">
-        <span class="field-label">身份證號</span>
-        <input v-model="draft.id_number" class="input" maxlength="20" autocomplete="off" :disabled="locked" />
+        <span class="field-label">身分證號{{ isNew ? '' : '（識別鍵，不可修改）' }}</span>
+        <input
+          v-model="draft.id_number"
+          class="input mono"
+          :class="{ invalid: isNew && draft.id_number.trim() === '' }"
+          maxlength="20"
+          autocomplete="off"
+          :readonly="!isNew"
+          :disabled="locked"
+          @blur="isNew && (draft.id_number = normalizeIdNumber(draft.id_number))"
+        />
       </label>
       <label class="field">
         <span class="field-label">生日（原樣保存，例 0750101）</span>
@@ -382,6 +417,9 @@ defineExpose({ isDirty });
       </div>
       <div v-if="!previous" class="muted">上月無此人員（新進）</div>
       <div v-else class="prev-body">
+        <span v-if="previousEmployeeNoChanged !== null">
+          上月職員編號：<strong class="mono">{{ previousEmployeeNoChanged }}</strong>
+        </span>
         <span>
           投保別 <strong>{{ previous.insurance_type }}</strong>
         </span>
@@ -462,6 +500,8 @@ defineExpose({ isDirty });
         </tr>
       </tbody>
     </table>
+
+    <div v-if="conflictMessage" class="alert alert-error">{{ conflictMessage }}</div>
 
     <div v-if="validationErrors.length > 0 && !readonly && isDirty" class="alert alert-warning">
       <div v-for="e in validationErrors" :key="e">{{ e }}</div>

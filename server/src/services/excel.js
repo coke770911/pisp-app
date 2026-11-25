@@ -37,7 +37,8 @@ export function cellText(value) {
 }
 
 /**
- * 表頭正規化：移除所有空白與換行、全形括號與連字號轉半形。
+ * 表頭正規化：移除所有空白與換行、全形括號與連字號轉半形；
+ * 「身份」視同「身分」（舊檔表頭「身份證號」仍可匯入，系統統一用「身分證號」）。
  * @param {string} s
  * @returns {string}
  */
@@ -46,7 +47,8 @@ export function normalizeHeader(s) {
     .replace(/\s+/g, '')
     .replace(/（/g, '(')
     .replace(/）/g, ')')
-    .replace(/[－—–]/g, '-');
+    .replace(/[－—–]/g, '-')
+    .replace(/身份/g, '身分');
 }
 
 /**
@@ -131,6 +133,17 @@ function throwIfErrors(errors) {
   const shown = errors.slice(0, MAX_ERRORS_SHOWN).join('；');
   const more = errors.length > MAX_ERRORS_SHOWN ? `…等共 ${errors.length} 項錯誤` : '';
   throw new HttpError(400, `檔案內容有誤：${shown}${more}`);
+}
+
+/**
+ * 列號清單轉文字（過多時截斷）。
+ * @param {ReadonlyArray<number>} rowNos
+ * @returns {string}
+ */
+function formatRowNos(rowNos) {
+  const max = 10;
+  const shown = rowNos.slice(0, max).join('、');
+  return rowNos.length > max ? `${shown}…等 ${rowNos.length} 列` : shown;
 }
 
 /**
@@ -268,7 +281,7 @@ export async function buildBracketWorkbook(brackets) {
 /** @typedef {'month_code' | 'employee_no' | 'name' | 'id_number' | 'birthday' | 'insurance_type' | 'source_name' | 'amount' | 'pension_rate'} DetailKey */
 
 /** 9 欄表頭（順序即匯出順序）；第 9 欄「勞退自提」匯入時為選填（相容舊版 8 欄檔） */
-export const DETAIL_HEADERS = Object.freeze(['月份資料', '職員編號', '姓名', '身份證號', '生日', '投保別', '薪資來源', '薪資', '勞退自提']);
+export const DETAIL_HEADERS = Object.freeze(['月份資料', '職員編號', '姓名', '身分證號', '生日', '投保別', '薪資來源', '薪資', '勞退自提']);
 
 /** 舊版 8 欄檔（無勞退自提欄）匯入時的提示 */
 export const NO_PENSION_COLUMN_WARNING = '檔案沒有勞退自提欄，已全部以 0% 計';
@@ -278,7 +291,7 @@ const DETAIL_HEADER_MAP = Object.freeze({
   [normalizeHeader('月份資料')]: 'month_code',
   [normalizeHeader('職員編號')]: 'employee_no',
   [normalizeHeader('姓名')]: 'name',
-  [normalizeHeader('身份證號')]: 'id_number',
+  [normalizeHeader('身分證號')]: 'id_number',
   [normalizeHeader('生日')]: 'birthday',
   [normalizeHeader('投保別')]: 'insurance_type',
   [normalizeHeader('薪資來源')]: 'source_name',
@@ -331,7 +344,11 @@ const detailRowSchema = z.object({
   month_code: z.string().max(20),
   employee_no: z.string().min(1, '職員編號為必填').max(20, '職員編號超過 20 字'),
   name: z.string().max(50, '姓名超過 50 字'),
-  id_number: z.string().max(20, '身份證號超過 20 字'),
+  // 身分證號：trim + 大寫（空白另行檢查並彙整列號）
+  id_number: z
+    .string()
+    .transform((s) => s.trim().toUpperCase())
+    .pipe(z.string().max(20, '身分證號超過 20 字')),
   birthday: z.string().max(20, '生日超過 20 字'),
   insurance_type: insuranceTypeSchema,
   source_name: z.string().min(1, '薪資來源為必填').max(50, '薪資來源超過 50 字'),
@@ -360,7 +377,9 @@ const detailRowSchema = z.object({
  */
 
 /**
- * 解析個人所得明細 xlsx（9 欄直式；相容舊版 8 欄），依職員編號歸戶。
+ * 解析個人所得明細 xlsx（9 欄直式；相容舊版 8 欄），依身分證號（trim + 大寫）歸戶。
+ * 身分證號空白 → 400；不同身分證號共用同一職員編號 → 400；
+ * 同一身分證號各列職員編號／姓名／投保別不一致 → 以第一列為準並加 warning。
  * 勞退自提：空白 = 未填；同一人多列取有填寫者的最高值；全部未填為 0。
  * @param {Buffer} buffer
  * @param {number} year   使用者選擇的民國年
@@ -379,8 +398,10 @@ export async function parsePayrollWorkbook(buffer, year, month) {
   const warnings = [];
   /** @type {Map<string, number>} 不一致的月份資料 → 列數 */
   const monthMismatch = new Map();
-  /** @type {Map<string, { rows: DetailRow[], rates: (number | null)[], order: number }>} */
+  /** @type {Map<string, { rows: DetailRow[], rowNos: number[], rates: (number | null)[], order: number }>} 身分證號 → 該人員各列 */
   const groups = new Map();
+  /** @type {number[]} 身分證號空白的列號 */
+  const blankIdRows = [];
 
   for (let r = headerRow + 1; r <= sheet.rowCount; r++) {
     const row = sheet.getRow(r);
@@ -421,15 +442,41 @@ export async function parsePayrollWorkbook(buffer, year, month) {
       const k = data.month_code || '（空白）';
       monthMismatch.set(k, (monthMismatch.get(k) ?? 0) + 1);
     }
-    const g = groups.get(data.employee_no);
+    // 依身分證號（schema 已 trim + 大寫）歸戶；空白先記下列號，最後一起回報
+    if (data.id_number === '') {
+      blankIdRows.push(r);
+      continue;
+    }
+    const g = groups.get(data.id_number);
     if (g) {
       g.rows.push(data);
+      g.rowNos.push(r);
       g.rates.push(pensionRate);
     } else {
-      groups.set(data.employee_no, { rows: [data], rates: [pensionRate], order: groups.size + 1 });
+      groups.set(data.id_number, { rows: [data], rowNos: [r], rates: [pensionRate], order: groups.size + 1 });
     }
   }
 
+  if (blankIdRows.length > 0) errors.push(`身分證號為必填（第 ${formatRowNos(blankIdRows)} 列空白）`);
+  throwIfErrors(errors);
+
+  // 不同身分證號使用同一職員編號 → 資料錯誤（以每人第一列的職員編號為準，並檢查所有列）
+  /** @type {Map<string, { ids: Set<string>, rowNos: number[] }>} 職員編號 → 使用者與列號 */
+  const byEmployeeNo = new Map();
+  for (const [idNumber, g] of groups) {
+    g.rows.forEach((row, i) => {
+      const e = byEmployeeNo.get(row.employee_no) ?? { ids: new Set(), rowNos: [] };
+      e.ids.add(idNumber);
+      e.rowNos.push(g.rowNos[i]);
+      byEmployeeNo.set(row.employee_no, e);
+    });
+  }
+  for (const [employeeNo, e] of byEmployeeNo) {
+    if (e.ids.size > 1) {
+      const rowNos = [...e.rowNos].sort((a, b) => a - b);
+      errors.push(`職員編號 ${employeeNo} 被不同身分證號的人員使用（第 ${formatRowNos(rowNos)} 列）`);
+    }
+  }
   throwIfErrors(errors);
   if (groups.size === 0) throw new HttpError(400, '明細檔沒有任何資料列');
   if (pensionCol === undefined) warnings.push(NO_PENSION_COLUMN_WARNING);
@@ -440,10 +487,19 @@ export async function parsePayrollWorkbook(buffer, year, month) {
 
   /** @type {ParsedPayroll[]} */
   const persons = [];
-  for (const [employeeNo, { rows, rates, order }] of groups) {
+  for (const [idNumber, { rows, rowNos, rates, order }] of groups) {
     const first = rows[0];
-    if (rows.some((x) => x.insurance_type !== first.insurance_type || x.name !== first.name)) {
-      warnings.push(`職員編號 ${employeeNo} 的姓名或投保別在各列不一致，以第一列為準`);
+    const employeeNo = first.employee_no;
+    // 同一身分證號各列的職員編號／姓名／投保別不一致 → 以第一列為準（warning 不含身分證號）
+    /** @type {string[]} */
+    const diffFields = [];
+    if (rows.some((x) => x.employee_no !== first.employee_no)) diffFields.push('職員編號');
+    if (rows.some((x) => x.name !== first.name)) diffFields.push('姓名');
+    if (rows.some((x) => x.insurance_type !== first.insurance_type)) diffFields.push('投保別');
+    if (diffFields.length > 0) {
+      warnings.push(
+        `第 ${formatRowNos(rowNos)} 列為同一人員（同一身分證號），但${diffFields.join('／')}不一致，以第 ${rowNos[0]} 列（職員編號 ${employeeNo}）為準`,
+      );
     }
     let baseIndex = rows.findIndex((x) => x.source_name === BASE_SOURCE_NAME);
     if (baseIndex < 0) {
@@ -456,7 +512,7 @@ export async function parsePayrollWorkbook(buffer, year, month) {
     persons.push({
       employee_no: employeeNo,
       name: first.name,
-      id_number: first.id_number,
+      id_number: idNumber,
       birthday: first.birthday,
       insurance_type: first.insurance_type,
       base_salary: rows[baseIndex].amount,

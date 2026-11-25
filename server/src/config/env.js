@@ -69,17 +69,30 @@ const envSchema = z.object({
     .transform((v) => v ?? ''),
   MSSQL_ENCRYPT: boolString(true),
   MSSQL_TRUST_SERVER_CERTIFICATE: boolString(true),
-  ADMIN_USERNAME: str,
-  ADMIN_PASSWORD: z
-    .string()
-    .optional()
-    .transform((v) => v ?? ''),
+  // 舊的 ADMIN_USERNAME / ADMIN_PASSWORD 已停用；.env 若仍留著，z.object 預設會忽略多餘鍵，不影響啟動
   SESSION_TTL_HOURS: intString(8),
   COOKIE_SECURE: boolString(false),
-  LOGIN_MIN_DELAY_MS: intString(800),
+  LOGIN_MIN_DELAY_MS: intString(1500),
   LOGIN_RATE_LIMIT: intString(10),
   // 反向代理（IIS/nginx）層數；0 = 不信任 X-Forwarded-For
   TRUST_PROXY: intString(0),
+  // ── 校內 portal 帳號驗證 ──
+  PORTAL_AUTH_URL: str,
+  // API 金鑰：只 trim，不做任何記錄
+  PORTAL_API_KEY: str,
+  PORTAL_TIMEOUT_MS: intString(8000),
+  // 啟動時確保為 active admin 的帳號（逗號分隔 → trim + 小寫、去空白與重複）
+  BOOTSTRAP_ADMINS: str.transform((v) => [
+    ...new Set(
+      v
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s !== ''),
+    ),
+  ]),
+  // ── 驗證碼 ──
+  CAPTCHA_TTL_SECONDS: intString(120),
+  CAPTCHA_RATE_LIMIT: intString(30),
 });
 
 /** @typedef {z.infer<typeof envSchema>} AppEnv */

@@ -447,7 +447,7 @@ function onBeforeUnload(e) {
 
 onBeforeRouteLeave(async () => {
   // 登入逾時導向時不提示
-  if (authState.username === null) return true;
+  if (authState.user === null) return true;
   return confirmDiscardEditing();
 });
 

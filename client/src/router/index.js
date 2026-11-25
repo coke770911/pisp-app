@@ -1,18 +1,23 @@
 // @ts-check
-/** 路由設定（History 模式）與登入守衛 */
+/** 路由設定（History 模式）與登入／權限守衛 */
 import { createRouter, createWebHistory } from 'vue-router';
 import { ensureAuth, authState } from '../stores/auth.js';
+import { toast } from '../stores/dialog.js';
 
 /**
  * @typedef {Object} AppRouteMeta
- * @property {boolean} [public] true = 不需登入
- * @property {string} [title]   頁面標題
+ * @property {boolean} [public]        true = 不需登入
+ * @property {boolean} [requiresAdmin] true = 僅管理者可進入
+ * @property {string} [title]          頁面標題
  */
+
+/** 首頁路徑 */
+const HOME_PATH = '/payrolls';
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/payrolls' },
+    { path: '/', redirect: HOME_PATH },
     {
       path: '/login',
       name: 'login',
@@ -31,7 +36,13 @@ export const router = createRouter({
       component: () => import('../views/BracketsView.vue'),
       meta: { title: '年度級距維護' },
     },
-    { path: '/:pathMatch(.*)*', redirect: '/payrolls' },
+    {
+      path: '/users',
+      name: 'users',
+      component: () => import('../views/UsersView.vue'),
+      meta: { title: '帳號管理', requiresAdmin: true },
+    },
+    { path: '/:pathMatch(.*)*', redirect: HOME_PATH },
   ],
 });
 
@@ -40,11 +51,15 @@ router.beforeEach(async (to) => {
   const loggedIn = await ensureAuth();
   if (meta.public) {
     // 已登入者進入登入頁 → 直接導回首頁
-    if (to.name === 'login' && loggedIn) return { path: '/payrolls' };
+    if (to.name === 'login' && loggedIn) return { path: HOME_PATH };
     return true;
   }
   if (!loggedIn) {
     return { name: 'login', query: { redirect: to.fullPath } };
+  }
+  if (meta.requiresAdmin === true && authState.user?.role !== 'admin') {
+    toast('權限不足', 'warning');
+    return { path: HOME_PATH };
   }
   return true;
 });
@@ -61,7 +76,7 @@ router.afterEach((to, _from, failure) => {
  * @returns {void}
  */
 export function handleSessionExpired() {
-  authState.username = null;
+  authState.user = null;
   authState.checked = true;
   const current = router.currentRoute.value;
   // 已在登入頁或已在導向中（多個請求同時 401）→ 不重複導向

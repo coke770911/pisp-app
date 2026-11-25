@@ -31,7 +31,11 @@ pisp-app/
 
 ### MonthlyPayroll（月度人員投保主檔）
 `roc_year INTEGER`, `month INTEGER(1~12)`, `employee_no STRING(20)`, `name STRING(50)`, `id_number STRING(20)`, `birthday STRING(20)`（原樣保存，例：民國 `0750101`）, `insurance_type STRING(10)`（`勞健`/`公健`）, `base_salary INTEGER`, `pension_rate INTEGER NOT NULL DEFAULT 0`（勞退自提率 %，0~6）, `status STRING(20)`（`draft`/`confirmed`）, `source_order INTEGER`（Excel 中首次出現順序，用於排序）。
-唯一索引 `(roc_year, month, employee_no)`。
+**人員識別鍵 = 身分證號 `id_number`**（職員編號可能被修改，身分證號不變）。
+- `id_number` 必填、儲存前 trim + 轉大寫、長度 ≤ 20。
+- 唯一索引 `uq_monthly_payrolls_year_month_idno (roc_year, month, id_number)`。
+- `employee_no` 為一般欄位（可修改）；同月內仍不得與他人重複（應用層檢查，非 DB 約束）。
+- **遷移**（啟動時，僅用 QueryInterface API）：`showIndex` 若有舊索引 `uq_monthly_payrolls_year_month_emp` → `removeIndex`；既有資料的 `id_number` 以 ORM 讀出後 trim+大寫寫回；檢查同月是否有重複或空白身分證號——有衝突則 console.warn 列出（只列年月與筆數，不印身分證）並**略過**建立新唯一索引，伺服器照常啟動；無衝突則 `addIndex` 新唯一索引（已存在則略過）。
 - **既有資料庫遷移**：`sync()` 不會新增欄位，啟動時須以 `queryInterface.describeTable()` 檢查，缺 `pension_rate` 時以 `queryInterface.addColumn()` 補上（INTEGER, allowNull false, defaultValue 0）。只用 Sequelize QueryInterface API，不寫 Raw SQL。
 
 ### MonthlyPayrollItem（逐筆疊加項目）
@@ -44,14 +48,15 @@ pisp-app/
 - 數值可能是 number 或 string（含千分位逗號），一律轉整數；空列略過。
 
 ### 個人所得明細（9 欄，直式）
-`月份資料`、`職員編號`、`姓名`、`身份證號`、`生日`、`投保別`、`薪資來源`、`薪資`、`勞退自提`
+`月份資料`、`職員編號`、`姓名`、`身分證號`、`生日`、`投保別`、`薪資來源`、`薪資`、`勞退自提`
 - `勞退自提`：自提率數字（常用 `0`、`1`、`3`、`6`，代表 %；允許 0~6 整數，可能是 number 或字串，可帶 `%` 符號）。
   - **空白 = 未填**，預設 0%。
   - 同一人多列：取**有填寫的列中最高值**；全部未填則為 0（使用 `shared/splitCalc.js` 的 `mergePensionRates()`）。
   - 有填但不是 0~6 整數 → 400（列出列號）。
   - 舊版 8 欄檔（沒有 `勞退自提` 欄）仍可匯入，全部視為 0，並回傳 warning「檔案沒有勞退自提欄，已全部以 0% 計」。
 - `月份資料` 形如 `11509`（民國年 + 2 位月份），`薪資` 可能為字串。
-- 依 `職員編號` 歸戶；`薪資來源 === '本薪'` 的列為 `base_salary`（若無則取該員第一筆）；其餘依出現順序成為 items（sort_order 1..N）。若同一人有多筆「本薪」，第一筆為基準，其餘當作加項。
+- 依 **`身分證號`**（trim + 大寫）歸戶。身分證號空白 → 400 列出列號。同一身分證號多列的職員編號／姓名／投保別不一致 → 以第一列為準並加 warning。不同身分證號使用同一職員編號 → 400（資料錯誤，列出職員編號與列號）。
+- 歸戶後：`薪資來源 === '本薪'` 的列為 `base_salary`（若無則取該員第一筆）；其餘依出現順序成為 items（sort_order 1..N）。若同一人有多筆「本薪」，第一筆為基準，其餘當作加項。
 - 匯入月份以使用者在畫面選擇的 year/month 為準；檔案中 `月份資料` 不一致時不拒絕，回傳 warnings（因為「匯出上月 → 修改 → 匯入本月」是正常流程）。
 - 匯出（上月資料）使用相同 9 欄格式，`月份資料` 寫該筆資料自己的年月（例 `11509`），本薪一列 + 每個 item 一列；`勞退自提` 每一列都寫該人員的 pension_rate。
 
@@ -63,21 +68,58 @@ pisp-app/
 
 使用 `shared/splitCalc.js` 的 `computeSplit(person, sortBrackets(brackets))`，前端即時重算、後端報表重算，兩邊必須呼叫同一份程式。
 
-## 認證（硬帳密）
-- 帳密來自環境變數 `ADMIN_USERNAME` / `ADMIN_PASSWORD`；任一為空 → 登入回 503「服務暫時無法使用」。
-- Session：登入成功產生 32 bytes 隨機 token，存在記憶體 Map（含到期時間 `SESSION_TTL_HOURS`，預設 8），以 httpOnly、SameSite=Strict cookie `hisp_sid` 下發（`COOKIE_SECURE=true` 時加 Secure）。
-- 帳號錯誤、密碼錯誤、格式錯誤：一律 401 `{ message: '帳號或密碼錯誤' }`；以 `crypto.timingSafeEqual` 比較雜湊（scrypt 後比對，帳號不存在時也做同成本假比對），失敗回應統一延遲到固定下限（`LOGIN_MIN_DELAY_MS`，預設 800ms）。
-- 速率限制：每 IP 每 15 分鐘最多 `LOGIN_RATE_LIMIT`（預設 10）次登入嘗試 → 429 `{ message: '嘗試次數過多，請稍後再試' }`。
-- 除 `/api/auth/login`、`/api/auth/me`、`/api/health` 外，所有 `/api/*` 需登入，否則 401 `{ message: '登入逾時，請重新登入' }`。
+## 認證（校內 portal API + 系統帳號白名單 + 4 位數字驗證碼）
+舊的硬帳密（`ADMIN_USERNAME` / `ADMIN_PASSWORD`）**停用並移除程式碼**。
+
+### 校內驗證 API（廠商 portal，REST）
+- `POST ${PORTAL_AUTH_URL}`，Headers：`Content-Type: application/json`、`X-Auth-Key: ${PORTAL_API_KEY}`；body `{ "Account": "...", "Password": "..." }`。
+- 回應：`{ Ok: boolean, Result: string, Code: string, DisplayName: string, Vendor, Timestamp }`（用 zod 驗證）。成功 = HTTP 200 且 `Ok === true`；`Code === 'INVALID_CREDENTIALS'`（或 Ok false 且 HTTP 200）= 帳密錯誤。
+- 其他狀況（逾時 `PORTAL_TIMEOUT_MS` 預設 8000、網路錯誤、HTTP 400/401 API_KEY_INVALID/403 IP_DENIED/429/500/503、回應格式不符）→ 視為**服務故障**，登入回 503「服務暫時無法使用」，console.error 只記錄 HTTP 狀態與 Code（**不得記錄密碼、不得記錄 API 金鑰**）。
+- `PORTAL_AUTH_URL` 或 `PORTAL_API_KEY` 未設定 → 登入回 503。API 金鑰只在後端使用，絕不送到前端。
+
+### 系統帳號（白名單）
+Model `SystemUser`（table `system_users`）：`account STRING(50)`（儲存前 trim + 轉小寫，唯一索引）、`display_name STRING(100)`（登入成功時以 portal DisplayName 更新）、`role STRING(20)`（`admin` / `user`）、`is_active BOOLEAN`（預設 true）、`created_by STRING(50)`、`last_login_at DATE`（可 null）。
+- 只有存在且 `is_active` 的帳號能登入。
+- 啟動時依 `BOOTSTRAP_ADMINS`（逗號分隔，例 `admin01`）確保這些帳號存在且為 active admin（已存在則升級為 admin 並啟用）。
+- 管理 API 僅 `admin` 可用（非 admin → 403「權限不足」）。不可停用／刪除／降級自己；不可讓系統沒有任何 active admin（409「至少需保留一位啟用中的管理者」）。帳號被停用、刪除或降級時，清除該帳號所有 session（降級則更新 session 角色）。
+
+### 驗證碼
+- `GET /api/auth/captcha` → `{ captchaId, image }`（`image` 為 `data:image/svg+xml;base64,...`），`Cache-Control: no-store`。
+- 4 位數字（0000–9999，crypto 隨機）；答案只存在伺服器記憶體 Map（captchaId = 16 bytes 隨機 hex），有效 `CAPTCHA_TTL_SECONDS`（預設 120）秒，**一次性**：登入時無論對錯都立即作廢。Map 定期清理並設上限（例如 5000 筆，超過先刪最舊）。
+- SVG：數字以 `<path>` 畫出（不得用 `<text>`、不得在任何屬性／註解出現答案），每個字元隨機位移與旋轉，加干擾線與雜點。
+- 速率限制：取驗證碼每 IP 每分鐘 `CAPTCHA_RATE_LIMIT`（預設 30）次 → 429。
+
+### 登入流程 `POST /api/auth/login`
+body `{ account, password, captchaId, captchaCode }`（zod 驗證；格式錯誤視同帳密錯誤回 401，但 captchaId/captchaCode 缺漏視同驗證碼錯誤）。
+1. 速率限制（每 IP 每 15 分鐘 `LOGIN_RATE_LIMIT`）→ 429「嘗試次數過多，請稍後再試」。
+2. **先驗驗證碼**（取出即刪除）：錯誤／過期／不存在 → 400 `{ message: '驗證碼錯誤或已過期', code: 'CAPTCHA_INVALID' }`。
+3. 呼叫 portal 驗證帳密（**無論帳號是否在白名單都呼叫**，讓成本一致）。服務故障 → 503。
+4. portal 失敗 **或** 帳號不在白名單／已停用 → 一律 401 `{ message: '帳號或密碼錯誤，或無此系統使用權限', code: 'INVALID_CREDENTIALS' }`。
+5. 所有失敗回應（400/401/503）統一延遲到 `LOGIN_MIN_DELAY_MS`（預設 1500）下限。
+6. 成功：更新 display_name、last_login_at，建立 session → 200 `{ account, displayName, role }`。
+- Session：32 bytes 隨機 token、記憶體 Map、`SESSION_TTL_HOURS`、httpOnly + SameSite=Strict cookie `hisp_sid`（`COOKIE_SECURE=true` 加 Secure）。session 內存 account、displayName、role。
+- 除 `/api/auth/login`、`/api/auth/captcha`、`/api/auth/me`、`/api/health` 外，所有 `/api/*` 需登入，否則 401 `{ message: '登入逾時，請重新登入' }`。
+
+### 前端登入頁規則
+- Enter 只由 `<form @submit.prevent>` 送出；不綁 `@keyup.enter`；送出函式 `if (loading) return`；「換一張」「顯示密碼」按鈕 `type="button"`。
+- 驗證碼欄：`inputmode="numeric"`、`maxlength="4"`、`autocomplete="off"`、只允許數字。
+- 每次送出後（成功或失敗）都換新驗證碼圖。
+- 400 CAPTCHA_INVALID：保留帳號密碼、清空驗證碼、焦點移到驗證碼。401：清空密碼與驗證碼、焦點移到密碼。429/503：顯示後端 message。網路錯誤：「服務暫時無法使用」。
+- 登入、取驗證碼請求標記略過全域 401 處理。
 - 錯誤回應一律 `{ message: string }`，不得外洩例外內容（伺服器端 console.error 記錄即可）。
 
 ## API（皆以 JSON，除檔案上傳/下載）
 | Method | Path | 說明 |
 |---|---|---|
 | GET | `/api/health` | `{ ok: true, name, version }` |
-| POST | `/api/auth/login` | body `{ username, password }` → 200 `{ username }` / 401 / 429 / 503 |
+| GET | `/api/auth/captcha` | `{ captchaId, image }` / 429 |
+| POST | `/api/auth/login` | body `{ account, password, captchaId, captchaCode }` → 200 `{ account, displayName, role }` / 400 CAPTCHA_INVALID / 401 / 429 / 503 |
 | POST | `/api/auth/logout` | 200 `{ ok: true }` |
-| GET | `/api/auth/me` | 200 `{ username }` / 401 |
+| GET | `/api/auth/me` | 200 `{ account, displayName, role }` / 401 |
+| GET | `/api/users` | （admin）`SystemUser[]`：`{ id, account, display_name, role, is_active, created_by, last_login_at, createdAt }`，依 account 排序 |
+| POST | `/api/users` | （admin）body `{ account, role }`（account 1~50 字，英數 `._-`，存小寫）；已存在 409「帳號已存在」→ 201 新帳號 |
+| PUT | `/api/users/:id` | （admin）body `{ role?, is_active? }`；自我保護與最後一位管理者規則見上 → 更新後帳號 |
+| DELETE | `/api/users/:id` | （admin）刪除帳號（同上保護）→ `{ ok: true }` |
 | GET | `/api/brackets/years` | `number[]`（遞減） |
 | GET | `/api/brackets?year=115` | `Bracket[]`（含 id、roc_year，依 salary_limit 遞增） |
 | POST | `/api/brackets/import` | multipart: `file`, `year` → 交易內整年度覆蓋 → `{ year, count }`（可匯入任意年度，例如下年度 116） |
@@ -91,9 +133,9 @@ pisp-app/
 | GET | `/api/payrolls?year=115&month=9` | `{ year, month, status: 'none'|'draft'|'confirmed', payrolls: Payroll[] }` |
 | POST | `/api/payrolls/import` | multipart: `file`, `year`, `month` → 若該月已 confirmed 回 409；否則交易內整月覆蓋 → `{ year, month, count, laborCount, publicCount, warnings: string[] }` |
 | GET | `/api/payrolls/export?year=115&month=8` | 下載 9 欄 xlsx（含勞退自提），檔名 `個人所得明細_115年08月.xlsx`（無資料回 404） |
-| PUT | `/api/payrolls/:id` | body `{ name, id_number, birthday, base_salary, insurance_type, pension_rate, items: [{ source_name, amount }] }`（職員編號不可改）（items 順序即 sort_order）；該月 confirmed 回 409 → 回傳更新後 Payroll |
+| PUT | `/api/payrolls/:id` | body `{ employee_no, name, birthday, base_salary, insurance_type, pension_rate, items: [{ source_name, amount }] }`（employee_no 必填）（**身分證號不可改**，作為識別鍵；職員編號可改，與同月他人重複回 409「職員編號已被其他人員使用」）（items 順序即 sort_order）；該月 confirmed 回 409 → 回傳更新後 Payroll |
 | POST | `/api/payrolls/copy` | body `{ fromYear, fromMonth, toYear, toMonth }`：把來源月份（不限狀態）所有人員與加項複製成目標月份 draft；目標月份已 confirmed 回 409；目標已有 draft 資料時需 body `overwrite: true` 否則 409 `{ message: '目標月份已有資料' }`；來源無資料 404 → `{ year, month, count }` |
-| POST | `/api/payrolls` | 新增單一人員 body `{ year, month, employee_no, name, id_number, birthday, insurance_type, base_salary, pension_rate, items }`；該月 confirmed 回 409；同月職員編號重複回 409 → 回傳 Payroll（source_order 取該月最大值 +1） |
+| POST | `/api/payrolls` | 新增單一人員 body `{ year, month, employee_no, name, id_number, birthday, insurance_type, base_salary, pension_rate, items }`；該月 confirmed 回 409；同月身分證號重複回 409「本月已有此身分證號的人員」、職員編號與他人重複回 409「職員編號已被其他人員使用」 → 回傳 Payroll（source_order 取該月最大值 +1） |
 | DELETE | `/api/payrolls/:id` | 刪除單一人員（含加項）；該月 confirmed 回 409 → `{ ok: true }` |
 | POST | `/api/payrolls/confirm` | body `{ year, month }` → 條件更新 draft→confirmed（已 confirmed 也回 200，冪等）→ `{ status: 'confirmed' }` |
 | POST | `/api/payrolls/reopen` | body `{ year, month }` → confirmed→draft → `{ status: 'draft' }` |

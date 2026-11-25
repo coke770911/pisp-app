@@ -33,6 +33,29 @@ export const PAYROLL_STATUS = Object.freeze({
 /** @typedef {Omit<PayrollAttributes, 'id'> & { id?: number }} PayrollCreationAttributes */
 /** @typedef {import('sequelize').Model<PayrollAttributes, PayrollCreationAttributes>} PayrollInstance */
 
+/**
+ * 人員識別鍵 = 身分證號：同年月內 (roc_year, month, id_number) 唯一。
+ * 注意：此索引刻意「不」放在 define() 的 indexes 內，改由 models/index.js 的遷移建立。
+ * 原因：sync() 會自動補建模型宣告但資料表缺少的索引；若既有資料庫同月有重複／空白身分證號，
+ * 建索引會失敗而導致伺服器無法啟動。由遷移先檢查衝突，有衝突時只警告並略過建立。
+ */
+export const PAYROLL_IDNO_INDEX = Object.freeze({
+  name: 'uq_monthly_payrolls_year_month_idno',
+  fields: Object.freeze(['roc_year', 'month', 'id_number']),
+});
+
+/** 舊版唯一索引（以職員編號識別），遷移時移除 */
+export const LEGACY_PAYROLL_EMP_INDEX_NAME = 'uq_monthly_payrolls_year_month_emp';
+
+/**
+ * 身分證號正規化：去除前後空白並轉大寫。
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeIdNumber(value) {
+  return value.trim().toUpperCase();
+}
+
 /** @type {import('sequelize').ModelStatic<PayrollInstance>} */
 export const MonthlyPayroll = sequelize.define(
   'MonthlyPayroll',
@@ -40,9 +63,11 @@ export const MonthlyPayroll = sequelize.define(
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     roc_year: { type: DataTypes.INTEGER, allowNull: false },
     month: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 12 } },
+    // 職員編號：一般欄位（可修改）；同月不得與他人重複由應用層檢查，非 DB 約束
     employee_no: { type: DataTypes.STRING(20), allowNull: false },
     name: { type: DataTypes.STRING(50), allowNull: false, defaultValue: '' },
-    id_number: { type: DataTypes.STRING(20), allowNull: false, defaultValue: '' },
+    // 身分證號：人員識別鍵（必填、trim + 大寫後儲存，不可修改）
+    id_number: { type: DataTypes.STRING(20), allowNull: false },
     birthday: { type: DataTypes.STRING(20), allowNull: false, defaultValue: '' },
     insurance_type: { type: DataTypes.STRING(10), allowNull: false },
     base_salary: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -53,6 +78,6 @@ export const MonthlyPayroll = sequelize.define(
   },
   {
     tableName: 'monthly_payrolls',
-    indexes: [{ name: 'uq_monthly_payrolls_year_month_emp', unique: true, fields: ['roc_year', 'month', 'employee_no'] }],
+    // 唯一索引 PAYROLL_IDNO_INDEX 由遷移建立（見上方說明），此處不宣告
   },
 );

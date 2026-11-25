@@ -129,6 +129,7 @@ export async function buildSplitReport(payrolls, brackets) {
   ws3.columns = [
     { header: '職員編號', key: 'employee_no', width: 12 },
     { header: '姓名', key: 'name', width: 12 },
+    { header: '身分證號', key: 'id_number', width: 14 },
     { header: '投保別', key: 'insurance_type', width: 16 },
     { header: '本薪', key: 'base_salary', width: 12 },
     { header: '總薪資', key: 'total_salary', width: 12 },
@@ -191,6 +192,7 @@ export async function buildSplitReport(payrolls, brackets) {
     ws3.addRow({
       employee_no: p.employee_no,
       name: p.name,
+      id_number: p.id_number,
       insurance_type: typeLabel(p.insurance_type),
       base_salary: p.base_salary,
       total_salary: totalSalary,

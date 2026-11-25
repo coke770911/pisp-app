@@ -5,6 +5,9 @@
 import { requestJson, downloadFile } from './http.js';
 import {
   UserSchema,
+  CaptchaSchema,
+  SystemUserSchema,
+  SystemUserListSchema,
   BracketListSchema,
   YearListSchema,
   BracketImportResultSchema,
@@ -24,6 +27,9 @@ const OkSchema = OkResultSchema;
 /** @typedef {import('./schemas.js').CopyResult} CopyResult */
 
 /** @typedef {import('./schemas.js').User} User */
+/** @typedef {import('./schemas.js').Role} Role */
+/** @typedef {import('./schemas.js').Captcha} Captcha */
+/** @typedef {import('./schemas.js').SystemUser} SystemUser */
 /** @typedef {import('./schemas.js').BracketRow} BracketRow */
 /** @typedef {import('./schemas.js').MonthData} MonthData */
 /** @typedef {import('./schemas.js').Payroll} Payroll */
@@ -33,9 +39,11 @@ const OkSchema = OkResultSchema;
 /** @typedef {import('./schemas.js').InsuranceType} InsuranceType */
 
 /**
+ * PUT /api/payrolls/:id 的 body。
+ * 身分證號為人員識別鍵、不可修改，故不放入；職員編號可修改（同月與他人重複回 409）。
  * @typedef {Object} PayrollUpdateBody
+ * @property {string} employee_no 職員編號（必填，≤ 20）
  * @property {string} name
- * @property {string} id_number
  * @property {string} birthday
  * @property {number} base_salary
  * @property {InsuranceType} insurance_type
@@ -43,18 +51,39 @@ const OkSchema = OkResultSchema;
  * @property {{ source_name: string, amount: number }[]} items 順序即 sort_order
  */
 
+/**
+ * POST /api/payrolls 的人員資料（年月另傳）：PUT 欄位 + 身分證號（識別鍵，trim + 大寫）。
+ * @typedef {PayrollUpdateBody & { id_number: string }} PayrollCreateBody
+ */
+
 /* ---------- 認證 ---------- */
 
 /**
+ * 登入 body（校內帳號密碼 + 驗證碼）。
+ * @typedef {Object} LoginBody
+ * @property {string} account
+ * @property {string} password
+ * @property {string} captchaId
+ * @property {string} captchaCode 4 位數字
+ */
+
+/**
+ * 取得新驗證碼（不觸發全域登入逾時處理）。
+ * @returns {Promise<Captcha>}
+ */
+export function fetchCaptcha() {
+  return requestJson('/api/auth/captcha', CaptchaSchema, { skipAuthRedirect: true });
+}
+
+/**
  * 登入（401 不觸發全域登入逾時處理）。
- * @param {string} username
- * @param {string} password
+ * @param {LoginBody} body
  * @returns {Promise<User>}
  */
-export function login(username, password) {
+export function login(body) {
   return requestJson('/api/auth/login', UserSchema, {
     method: 'POST',
-    json: { username, password },
+    json: body,
     skipAuthRedirect: true,
   });
 }
@@ -70,6 +99,42 @@ export async function logout() {
  */
 export function fetchMe() {
   return requestJson('/api/auth/me', UserSchema, { skipAuthRedirect: true });
+}
+
+/* ---------- 系統帳號（admin） ---------- */
+
+/** @returns {Promise<SystemUser[]>} */
+export function fetchUsers() {
+  return requestJson('/api/users', SystemUserListSchema);
+}
+
+/**
+ * 新增系統帳號（已存在回 409）。
+ * @param {string} account
+ * @param {Role} role
+ * @returns {Promise<SystemUser>}
+ */
+export function createUser(account, role) {
+  return requestJson('/api/users', SystemUserSchema, { method: 'POST', json: { account, role } });
+}
+
+/**
+ * 修改角色或啟用狀態。
+ * @param {number} id
+ * @param {{ role?: Role, is_active?: boolean }} body
+ * @returns {Promise<SystemUser>}
+ */
+export function updateUser(id, body) {
+  return requestJson(`/api/users/${id}`, SystemUserSchema, { method: 'PUT', json: body });
+}
+
+/**
+ * 刪除系統帳號。
+ * @param {number} id
+ * @returns {Promise<void>}
+ */
+export async function deleteUser(id) {
+  await requestJson(`/api/users/${id}`, OkResultSchema, { method: 'DELETE' });
 }
 
 /* ---------- 級距 ---------- */
@@ -205,17 +270,16 @@ export function updatePayroll(id, body) {
 }
 
 /**
- * 新增單一人員。
+ * 新增單一人員（同月身分證號或職員編號重複回 409）。
  * @param {number} year
  * @param {number} month
- * @param {string} employeeNo
- * @param {PayrollUpdateBody} body
+ * @param {PayrollCreateBody} body
  * @returns {Promise<Payroll>}
  */
-export function createPayroll(year, month, employeeNo, body) {
+export function createPayroll(year, month, body) {
   return requestJson('/api/payrolls', PayrollSchema, {
     method: 'POST',
-    json: { year, month, employee_no: employeeNo, ...body },
+    json: { year, month, ...body },
   });
 }
 

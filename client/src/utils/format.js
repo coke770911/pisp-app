@@ -31,6 +31,19 @@ export function pad2(n) {
 }
 
 /**
+ * 將日期時間字串格式化為民國年（例：`115/11/25 14:03`）；空值或無效回 `—`。
+ * @param {string | null | undefined} value ISO 日期時間字串
+ * @returns {string}
+ */
+export function formatRocDateTime(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  const rocYear = d.getFullYear() - 1911;
+  return `${rocYear}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
  * 取得上個月（1 月 → 去年 12 月）。
  * @param {number} year 民國年
  * @param {number} month 1~12

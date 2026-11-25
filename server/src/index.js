@@ -10,11 +10,12 @@ import cookieParser from 'cookie-parser';
 import { z } from 'zod';
 import { env, SERVER_DIR } from './config/env.js';
 import { initDatabase } from './models/index.js';
-import { requireAuth } from './middleware/auth.js';
+import { requireAdmin, requireAuth } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
 import { bracketsRouter } from './routes/brackets.js';
 import { payrollsRouter } from './routes/payrolls.js';
 import { reportsRouter } from './routes/reports.js';
+import { usersRouter } from './routes/users.js';
 import { HttpError } from './utils/http.js';
 
 const APP_NAME = 'HISP - 人事勞健保加退拆帳系統';
@@ -39,6 +40,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: APP_NAME, version: APP_VERSION });
 });
 app.use('/api/auth', authRouter);
+app.use('/api/users', requireAuth, requireAdmin, usersRouter);
 app.use('/api/brackets', requireAuth, bracketsRouter);
 app.use('/api/payrolls', requireAuth, payrollsRouter);
 app.use('/api/reports', requireAuth, reportsRouter);

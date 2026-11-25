@@ -1,13 +1,14 @@
 # HISP - 人事勞健保加退拆帳系統（hr-ins-split）
 
-目前版本：**0.1.1**
+目前版本：**0.1.2**
 
-學校人事單位用的勞健保級距「逐筆疊加拆帳」系統：匯入年度級距表與每月個人所得明細，系統依職員編號歸戶，對「勞健」人員逐筆累加薪資來源、重新對照級距，把保費差額拆給每一個薪資來源，並產出 Excel 拆帳報表。
+學校人事單位用的勞健保級距「逐筆疊加拆帳」系統：匯入年度級距表與每月個人所得明細，系統依身分證號歸戶，對每位人員逐筆累加薪資來源、重新對照級距，把保費差額拆給每一個薪資來源，並產出 Excel 拆帳報表。
 
 ## 功能
-- **登入**：硬帳密（`.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`），httpOnly Session Cookie；失敗統一回「帳號或密碼錯誤」、固定延遲、每 IP 速率限制。
+- **登入**：使用校內帳號密碼（呼叫學校 portal 驗證 API）＋ 4 位數字驗證碼；只有在「帳號管理」中新增且啟用的帳號才能登入。失敗一律回同一訊息與狀態碼、固定最短回應時間、每 IP 速率限制，避免帳號列舉。
+- **帳號管理**（管理者）：新增／停用／刪除系統帳號、設定管理者或一般使用者。`BOOTSTRAP_ADMINS` 指定的帳號啟動時自動成為管理者。
 - **年度級距維護**：匯入 7 欄級距表到任一民國年度（可直接上傳下年度，整年度覆蓋）；刪除整個年度；線上新增／修改／刪除單列；複製本年度到下年度；匯出 xlsx 修改後再上傳。
-- **月度投保資料匯入**：匯入 9 欄直式明細，依職員編號歸戶；或匯出上個月已存檔資料（同 9 欄格式）修改後匯入本月。
+- **月度投保資料匯入**：匯入 9 欄直式明細，依**身分證號**歸戶（職員編號可能變動，身分證號不變）；或匯出上個月已存檔資料（同 9 欄格式）修改後匯入本月。
 - **投保別**：`勞健` 計算勞保、勞退、健保全部 6 項；`公健` 只計算健保（健保費-個人、健保費-學校），勞保三項與勞退金-學校一律為 0，標示「公健（只計健保）」。兩者都採相同的逐筆疊加拆帳。
 - **逐筆疊加拆帳**：Step 0 本薪算基準保費 → 每多一個薪資來源就累加、重算級距、與前一階段相減，差額歸屬該來源（未跨級距為 0）。
 - **每月沿用與比對**：一鍵沿用上個月資料，或下載上個月基本資料（9 欄 xlsx）檢查、修改後上傳；清單自動標示與上月相比的「新進」「本薪變動」「加項變動」，並列出上月有、本月無的人員；可新增／刪除人員。
@@ -44,7 +45,7 @@ pisp-app/
 ```powershell
 npm run install:all
 ```
-複製 `.env.example` 為 `.env`，**填入 `ADMIN_USERNAME` 與 `ADMIN_PASSWORD`**（未設定時登入會回「服務暫時無法使用」）。
+複製 `.env.example` 為 `.env`，**填入 `PORTAL_AUTH_URL`、`PORTAL_API_KEY`（向學校管理者索取）與 `BOOTSTRAP_ADMINS`（第一位管理者的校內帳號）**；未設定 portal 時登入會回「服務暫時無法使用」。校內驗證 API 有 IP 白名單，伺服器需在允許的校內網段。
 
 正式運行（單一入口 http://localhost:9090）：
 ```powershell
@@ -75,18 +76,25 @@ npm run typecheck
 | `SQLITE_STORAGE` | SQLite 檔案（相對 server/） | `data/hisp.sqlite` |
 | `MSSQL_HOST` / `MSSQL_PORT` / `MSSQL_DATABASE` / `MSSQL_USER` / `MSSQL_PASSWORD` | SQL Server 連線 | |
 | `MSSQL_ENCRYPT` / `MSSQL_TRUST_SERVER_CERTIFICATE` | SQL Server 加密選項 | `true` |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 登入帳密（硬帳密） | 空 |
 | `SESSION_TTL_HOURS` | 登入有效時數 | `8` |
 | `COOKIE_SECURE` | HTTPS 部署時設 `true` | `false` |
-| `LOGIN_MIN_DELAY_MS` | 登入失敗最短回應時間 | `800` |
+| `LOGIN_MIN_DELAY_MS` | 登入失敗最短回應時間（毫秒） | `1500` |
 | `LOGIN_RATE_LIMIT` | 每 IP 每 15 分鐘登入嘗試上限 | `10` |
+| `PORTAL_AUTH_URL` | 校內驗證 REST 端點 | 空 |
+| `PORTAL_API_KEY` | 校內驗證 API 金鑰（`X-Auth-Key`，機密） | 空 |
+| `PORTAL_TIMEOUT_MS` | 呼叫校內 API 逾時（毫秒） | `8000` |
+| `BOOTSTRAP_ADMINS` | 啟動時確保為管理者的帳號（逗號分隔） | 空 |
+| `CAPTCHA_TTL_SECONDS` | 驗證碼有效秒數 | `120` |
+| `CAPTCHA_RATE_LIMIT` | 每 IP 每分鐘取驗證碼上限 | `30` |
 | `TRUST_PROXY` | 反向代理層數（IIS/nginx 後方設 `1`，速率限制才會依真實 IP） | `0` |
 
 ## Excel 格式
 **年度級距表（7 欄）**：`月投保金額`、`勞保費個人`、`勞保費學校(不含職災)`、`勞保費學校-職災`、`勞退金-學校`、`健保費-個人`、`健保費-學校`（表頭中的換行與空白會自動忽略）。
 
-**個人所得明細（9 欄）**：`月份資料`、`職員編號`、`姓名`、`身份證號`、`生日`、`投保別`、`薪資來源`、`薪資`、`勞退自提`
+**個人所得明細（9 欄）**：`月份資料`、`職員編號`、`姓名`、`身分證號`、`生日`、`投保別`、`薪資來源`、`薪資`、`勞退自提`
 - `薪資來源 = 本薪` 為基準（無則取該員第一筆），其餘依 Excel 出現順序成為第 1、2、3… 個加項。
+- **身分證號是人員識別鍵**：必填，自動去空白並轉大寫；同月不可重複。職員編號可在工作台修改（同月不可與他人重複），與上月比對時以身分證號配對並標示「職員編號變動」。
+- 表頭寫「身份證號」的舊檔也能匯入（視同「身分證號」）；系統畫面與匯出一律使用「身分證號」。
 - 匯入月份以畫面選擇為準；檔案的 `月份資料` 不同時只提示警告。
 - `勞退自提` 填自提率數字（0、1、3、6，代表 %，可寫 `6%`）；**留空＝0%**。同一人多列時，取有填寫的列中**最高值**。舊版 8 欄檔仍可匯入（全部以 0% 計）。
 
@@ -95,7 +103,8 @@ npm run typecheck
 
 | Method | Path | 說明 |
 |---|---|---|
-| POST | `/api/auth/login` · `/api/auth/logout` · GET `/api/auth/me` | 登入／登出／目前使用者 |
+| GET/POST | `/api/auth/captcha`、`/api/auth/login`、`/api/auth/logout`、GET `/api/auth/me` | 驗證碼／登入／登出／目前使用者 |
+| GET/POST/PUT/DELETE | `/api/users`、`/api/users/:id` | 帳號管理（管理者） |
 | GET/POST | `/api/brackets`、`/api/brackets/years`、`/api/brackets/import` | 級距查詢、新增單列、匯入 |
 | PUT/DELETE | `/api/brackets/:id`、DELETE `/api/brackets?year=` | 修改／刪除單列、刪除整年度 |
 | POST/GET | `/api/brackets/copy`、`/api/brackets/export` | 複製年度、匯出 xlsx |

@@ -17,7 +17,7 @@ import {
 } from '../api/index.js';
 import { ApiError, errorMessage } from '../api/http.js';
 import { formatNumber, previousMonth, toInt } from '../utils/format.js';
-import { compareWithPrevious, indexByEmployeeNo, missingInCurrent, NO_CHANGE } from '../utils/compare.js';
+import { compareWithPrevious, indexByPersonKey, personKey, missingInCurrent, NO_CHANGE } from '../utils/compare.js';
 import { askConfirm, toast } from '../stores/dialog.js';
 import { authState } from '../stores/auth.js';
 
@@ -40,7 +40,7 @@ import { authState } from '../stores/auth.js';
  */
 
 /** @typedef {'all' | '勞健' | '公健'} TypeFilter */
-/** @typedef {'all' | 'changed' | 'new' | 'base' | 'items' | 'pension'} ChangeFilter */
+/** @typedef {'all' | 'changed' | 'new' | 'employeeNo' | 'base' | 'items' | 'pension'} ChangeFilter */
 
 /** 編輯面板目標：既有人員 id 或新增 */
 /** @typedef {{ mode: 'edit', id: number } | { mode: 'new' }} EditorTarget */
@@ -136,7 +136,8 @@ const fileInput = ref(null);
 
 /* ---------- 衍生資料 ---------- */
 
-const prevIndex = computed(() => indexByEmployeeNo(prevPayrolls.value));
+/** 上月資料索引（以身分證號配對） */
+const prevIndex = computed(() => indexByPersonKey(prevPayrolls.value));
 
 /** 是否有上月資料可比對 */
 const hasPrev = computed(() => prevPayrolls.value.length > 0);
@@ -154,7 +155,7 @@ const rows = computed(() =>
       finalLimit: last ? last.salary_limit : 0,
       pensionRate,
       // 上月完全無資料時不標示變動
-      change: hasPrev.value ? compareWithPrevious(p, prevIndex.value.get(p.employee_no)) : NO_CHANGE,
+      change: hasPrev.value ? compareWithPrevious(p, prevIndex.value.get(personKey(p))) : NO_CHANGE,
     };
   }),
 );
@@ -166,10 +167,18 @@ const filteredRows = computed(() => {
     if (typeFilter.value !== 'all' && r.p.insurance_type !== typeFilter.value) return false;
     if (changeFilter.value === 'changed' && !r.change.any) return false;
     if (changeFilter.value === 'new' && !r.change.isNew) return false;
+    if (changeFilter.value === 'employeeNo' && !r.change.employeeNoChanged) return false;
     if (changeFilter.value === 'base' && !r.change.baseChanged) return false;
     if (changeFilter.value === 'items' && !r.change.itemsChanged) return false;
     if (changeFilter.value === 'pension' && !r.change.pensionChanged) return false;
-    if (q !== '' && !r.p.employee_no.toLowerCase().includes(q) && !r.p.name.toLowerCase().includes(q)) return false;
+    // 搜尋職員編號、姓名、身分證號（皆不分大小寫）
+    if (
+      q !== '' &&
+      !r.p.employee_no.toLowerCase().includes(q) &&
+      !r.p.name.toLowerCase().includes(q) &&
+      !(r.p.id_number ?? '').toLowerCase().includes(q)
+    )
+      return false;
     return true;
   });
 });
@@ -212,7 +221,7 @@ const editingPayroll = computed(() => {
 /** 編輯中人員的上月資料 */
 const editingPrevious = computed(() => {
   const p = editingPayroll.value;
-  return p ? (prevIndex.value.get(p.employee_no) ?? null) : null;
+  return p ? (prevIndex.value.get(personKey(p)) ?? null) : null;
 });
 
 /* ---------- 載入 ---------- */
@@ -618,7 +627,7 @@ function onBeforeUnload(e) {
 
 onBeforeRouteLeave(async () => {
   // 登入逾時導向時不提示
-  if (authState.username === null) return true;
+  if (authState.user === null) return true;
   return confirmDiscardEditor();
 });
 
@@ -758,7 +767,7 @@ onBeforeUnmount(() => {
         <div class="start-option">
           <div class="start-num">C</div>
           <h4>上傳明細 xlsx</h4>
-          <p class="muted">9 欄格式（含勞退自提，可留空＝0%）：月份資料、職員編號、姓名、身份證號、生日、投保別、薪資來源、薪資、勞退自提。</p>
+          <p class="muted">9 欄格式（含勞退自提，可留空＝0%）：月份資料、職員編號、姓名、身分證號、生日、投保別、薪資來源、薪資、勞退自提。</p>
           <button type="button" class="btn" :disabled="busy" @click="pickImportFile">
             {{ importing ? '匯入中…' : '上傳明細 xlsx' }}
           </button>
@@ -802,14 +811,14 @@ onBeforeUnmount(() => {
       <!-- 上月有、本月無 -->
       <div v-if="missingPeople.length > 0" class="alert alert-info">
         <strong>{{ prevLabel }}有、本月無（離職／異動）共 {{ missingPeople.length }} 人：</strong>
-        <span v-for="p in missingPeople" :key="p.employee_no" class="missing-person">
-          {{ p.employee_no }} {{ p.name }}
+        <span v-for="p in missingPeople" :key="p.id" class="missing-person">
+          {{ p.employee_no }} {{ p.name }} <span class="mono">{{ p.id_number ?? '' }}</span>
         </span>
       </div>
 
       <!-- 篩選 -->
       <div class="filter-bar">
-        <input v-model="search" class="input input-search" placeholder="搜尋職員編號或姓名" aria-label="搜尋" />
+        <input v-model="search" class="input input-search" placeholder="搜尋職員編號、姓名或身分證號" aria-label="搜尋" />
         <select v-model="typeFilter" class="input input-select" aria-label="投保別篩選">
           <option value="all">全部投保別</option>
           <option value="勞健">勞健</option>
@@ -819,6 +828,7 @@ onBeforeUnmount(() => {
           <option value="all">全部人員</option>
           <option value="changed">只看有變動</option>
           <option value="new">新進</option>
+          <option value="employeeNo">職員編號變動</option>
           <option value="base">本薪變動</option>
           <option value="items">加項變動</option>
           <option value="pension">自提率變動</option>
@@ -834,6 +844,7 @@ onBeforeUnmount(() => {
               <tr>
                 <th>職員編號</th>
                 <th>姓名</th>
+                <th>身分證號</th>
                 <th>投保別</th>
                 <th class="num">自提率</th>
                 <th>與上月比對</th>
@@ -848,7 +859,7 @@ onBeforeUnmount(() => {
             </thead>
             <tbody>
               <tr v-if="filteredRows.length === 0">
-                <td colspan="12" class="empty-row">沒有符合條件的人員</td>
+                <td colspan="13" class="empty-row">沒有符合條件的人員</td>
               </tr>
               <tr
                 v-for="r in filteredRows"
@@ -859,6 +870,7 @@ onBeforeUnmount(() => {
               >
                 <td class="mono">{{ r.p.employee_no }}</td>
                 <td>{{ r.p.name }}</td>
+                <td class="mono">{{ r.p.id_number ?? '' }}</td>
                 <td>
                   <span v-if="r.p.insurance_type === '公健'" class="tag tag-public">公健（只計健保）</span>
                   <span v-else class="tag tag-labor">勞健</span>
@@ -866,6 +878,13 @@ onBeforeUnmount(() => {
                 <td class="num" :class="{ 'rate-zero': r.pensionRate === 0 }">{{ r.pensionRate }}%</td>
                 <td class="nowrap">
                   <span v-if="r.change.isNew" class="tag tag-new">新進</span>
+                  <span
+                    v-if="r.change.employeeNoChanged"
+                    class="tag tag-change"
+                    :title="`職員編號 ${r.change.previousEmployeeNo ?? ''} → ${r.p.employee_no}（上月 → 本月）`"
+                  >
+                    職員編號變動
+                  </span>
                   <span v-if="r.change.baseChanged" class="tag tag-change">本薪變動</span>
                   <span v-if="r.change.itemsChanged" class="tag tag-change">加項變動</span>
                   <span v-if="r.change.typeChanged" class="tag tag-change">投保別變動</span>
@@ -894,7 +913,7 @@ onBeforeUnmount(() => {
             </tbody>
             <tfoot v-if="rows.length > 0">
               <tr>
-                <td colspan="9">全月合計（{{ rows.length }} 人）</td>
+                <td colspan="10">全月合計（{{ rows.length }} 人）</td>
                 <td class="num">{{ formatNumber(summary.emp) }}</td>
                 <td class="num">{{ formatNumber(summary.school) }}</td>
                 <td></td>
