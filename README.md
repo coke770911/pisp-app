@@ -1,11 +1,11 @@
 # HISP - 人事勞健保加退拆帳系統（hr-ins-split）
 
-目前版本：**0.1.2**
+目前版本：**0.1.3**
 
 學校人事單位用的勞健保級距「逐筆疊加拆帳」系統：匯入年度級距表與每月個人所得明細，系統依身分證號歸戶，對每位人員逐筆累加薪資來源、重新對照級距，把保費差額拆給每一個薪資來源，並產出 Excel 拆帳報表。
 
 ## 功能
-- **登入**：使用校內帳號密碼（呼叫學校 portal 驗證 API）＋ 4 位數字驗證碼；只有在「帳號管理」中新增且啟用的帳號才能登入。失敗一律回同一訊息與狀態碼、固定最短回應時間、每 IP 速率限制，避免帳號列舉。
+- **登入**：使用校內帳號密碼（呼叫學校 portal 驗證 API）＋ 4 位數字驗證碼；只有在「帳號管理」中新增且啟用的帳號才能登入。失敗一律回同一訊息與狀態碼、固定最短回應時間、每 IP 速率限制，避免帳號列舉。登入狀態採 **JWT**（HS256，放在 httpOnly + SameSite=Strict cookie）；停用／刪除帳號時其 JWT 立即失效，角色變更即時生效。
 - **帳號管理**（管理者）：新增／停用／刪除系統帳號、設定管理者或一般使用者。`BOOTSTRAP_ADMINS` 指定的帳號啟動時自動成為管理者。
 - **年度級距維護**：匯入 7 欄級距表到任一民國年度（可直接上傳下年度，整年度覆蓋）；刪除整個年度；線上新增／修改／刪除單列；複製本年度到下年度；匯出 xlsx 修改後再上傳。
 - **月度投保資料匯入**：匯入 9 欄直式明細，依**身分證號**歸戶（職員編號可能變動，身分證號不變）；或匯出上個月已存檔資料（同 9 欄格式）修改後匯入本月。
@@ -76,7 +76,8 @@ npm run typecheck
 | `SQLITE_STORAGE` | SQLite 檔案（相對 server/） | `data/hisp.sqlite` |
 | `MSSQL_HOST` / `MSSQL_PORT` / `MSSQL_DATABASE` / `MSSQL_USER` / `MSSQL_PASSWORD` | SQL Server 連線 | |
 | `MSSQL_ENCRYPT` / `MSSQL_TRUST_SERVER_CERTIFICATE` | SQL Server 加密選項 | `true` |
-| `SESSION_TTL_HOURS` | 登入有效時數 | `8` |
+| `SESSION_TTL_HOURS` | 登入（JWT）有效時數 | `8` |
+| `JWT_SECRET` | JWT 簽章金鑰（機密，至少 32 字元隨機值；未設定時每次啟動產生臨時金鑰，重啟後需重新登入） | 空 |
 | `COOKIE_SECURE` | HTTPS 部署時設 `true` | `false` |
 | `LOGIN_MIN_DELAY_MS` | 登入失敗最短回應時間（毫秒） | `1500` |
 | `LOGIN_RATE_LIMIT` | 每 IP 每 15 分鐘登入嘗試上限 | `10` |

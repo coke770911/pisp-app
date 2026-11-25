@@ -9,7 +9,7 @@
 import { Router } from 'express';
 import { Transaction, UniqueConstraintError } from 'sequelize';
 import { z } from 'zod';
-import { currentUser, destroySessionsByAccount, updateSessionsRole } from '../middleware/auth.js';
+import { currentUser, revokeTokensByAccount } from '../middleware/auth.js';
 import { SystemUser, USER_ROLES, normalizeAccount, sequelize } from '../models/index.js';
 import { HttpError, parseInput } from '../utils/http.js';
 
@@ -169,30 +169,31 @@ usersRouter.put('/:id', async (req, res) => {
     }
 
     await row.update({ role: nextRole, is_active: nextActive }, { transaction: t });
-    return { row, account: before.account, role: nextRole, roleChanged: nextRole !== before.role, deactivated: !nextActive };
+    // 停用 → token_version +1，該帳號既有 JWT 全部失效（之後重新啟用也不會復活）。
+    // 角色變更不需處理：每次請求的角色一律以資料庫為準。
+    if (Boolean(before.is_active) && !nextActive) {
+      await revokeTokensByAccount(before.account, t);
+      await row.reload({ transaction: t });
+    }
+    return row;
   });
 
-  // 交易成功後同步 session：停用 → 清除；角色變更 → 更新角色
-  if (result.deactivated) destroySessionsByAccount(result.account);
-  else if (result.roleChanged) updateSessionsRole(result.account, result.role);
-
-  res.json(toDto(result.row));
+  res.json(toDto(result));
 });
 
 usersRouter.delete('/:id', async (req, res) => {
   const { id } = parseInput(idParamSchema, req.params);
   const me = currentUser(res);
 
-  const account = await serializedTransaction(async (t) => {
+  // 刪除後該帳號的 JWT 會因查無帳號而失效；即使日後以同名重建，也會取得新 id（JWT 內的 uid 不符）
+  await serializedTransaction(async (t) => {
     const row = await findUserOr404(id, t);
     const before = row.get({ plain: true });
     if (before.account === me.account) throw new HttpError(409, SELF_PROTECT_MESSAGE);
     const isActiveAdmin = before.role === 'admin' && Boolean(before.is_active);
     if (isActiveAdmin && (await countActiveAdmins(t)) <= 1) throw new HttpError(409, LAST_ADMIN_MESSAGE);
     await row.destroy({ transaction: t });
-    return before.account;
   });
 
-  destroySessionsByAccount(account);
   res.json({ ok: true });
 });

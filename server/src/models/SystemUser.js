@@ -20,6 +20,7 @@ export const USER_ROLES = /** @type {const} */ (['admin', 'user']);
  * @property {boolean} is_active           是否啟用
  * @property {string | null} created_by    建立者帳號（啟動自動建立時為 null）
  * @property {Date | null} last_login_at   最後登入時間
+ * @property {number} token_version        JWT 版本號：停用／刪除時 +1，使既有 JWT 全部失效
  * @property {Date} [createdAt]
  * @property {Date} [updatedAt]
  */
@@ -33,6 +34,7 @@ export const USER_ROLES = /** @type {const} */ (['admin', 'user']);
  * @property {boolean} [is_active]
  * @property {string | null} [created_by]
  * @property {Date | null} [last_login_at]
+ * @property {number} [token_version]
  */
 
 /** @typedef {import('sequelize').Model<SystemUserAttributes, SystemUserCreationAttributes>} SystemUserInstance */
@@ -64,6 +66,7 @@ export const SystemUser = sequelize.define(
     is_active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     created_by: { type: DataTypes.STRING(50), allowNull: true, defaultValue: null },
     last_login_at: { type: DataTypes.DATE, allowNull: true, defaultValue: null },
+    token_version: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   },
   {
     tableName: 'system_users',

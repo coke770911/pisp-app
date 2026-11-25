@@ -39,6 +39,23 @@ async function migrateAddPensionRate() {
   console.log('[db] 已為 monthly_payrolls 新增 pension_rate 欄位（既有資料預設 0）');
 }
 
+/**
+ * system_users 補上 token_version 欄位（JWT 撤銷用）。只用 QueryInterface API。
+ * @returns {Promise<void>}
+ */
+async function migrateAddTokenVersion() {
+  const qi = sequelize.getQueryInterface();
+  const tableName = SystemUser.getTableName();
+  const columns = await qi.describeTable(tableName);
+  if ('token_version' in columns) return;
+  await qi.addColumn(tableName, 'token_version', {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+  });
+  console.log('[db] 已為 system_users 新增 token_version 欄位');
+}
+
 /** showIndex 回傳結構（各方言皆有 name；其他欄位不使用） */
 const indexListSchema = z.array(z.object({ name: z.string() }).loose());
 
@@ -199,6 +216,7 @@ export async function initDatabase() {
   await sequelize.sync();
   await migrateAddPensionRate();
   await migrateIdNumberKey();
+  await migrateAddTokenVersion();
   await ensureBootstrapAdmins(env.BOOTSTRAP_ADMINS);
 }
 

@@ -81,7 +81,7 @@ pisp-app/
 Model `SystemUser`（table `system_users`）：`account STRING(50)`（儲存前 trim + 轉小寫，唯一索引）、`display_name STRING(100)`（登入成功時以 portal DisplayName 更新）、`role STRING(20)`（`admin` / `user`）、`is_active BOOLEAN`（預設 true）、`created_by STRING(50)`、`last_login_at DATE`（可 null）。
 - 只有存在且 `is_active` 的帳號能登入。
 - 啟動時依 `BOOTSTRAP_ADMINS`（逗號分隔，例 `admin01`）確保這些帳號存在且為 active admin（已存在則升級為 admin 並啟用）。
-- 管理 API 僅 `admin` 可用（非 admin → 403「權限不足」）。不可停用／刪除／降級自己；不可讓系統沒有任何 active admin（409「至少需保留一位啟用中的管理者」）。帳號被停用、刪除或降級時，清除該帳號所有 session（降級則更新 session 角色）。
+- 管理 API 僅 `admin` 可用（非 admin → 403「權限不足」）。不可停用／刪除／降級自己；不可讓系統沒有任何 active admin（409「至少需保留一位啟用中的管理者」）。帳號被停用、刪除時，該帳號既有的 JWT 立即失效；角色變更於下一個請求立即生效（見下方 JWT 說明）。
 
 ### 驗證碼
 - `GET /api/auth/captcha` → `{ captchaId, image }`（`image` 為 `data:image/svg+xml;base64,...`），`Cache-Control: no-store`。
@@ -97,7 +97,12 @@ body `{ account, password, captchaId, captchaCode }`（zod 驗證；格式錯誤
 4. portal 失敗 **或** 帳號不在白名單／已停用 → 一律 401 `{ message: '帳號或密碼錯誤，或無此系統使用權限', code: 'INVALID_CREDENTIALS' }`。
 5. 所有失敗回應（400/401/503）統一延遲到 `LOGIN_MIN_DELAY_MS`（預設 1500）下限。
 6. 成功：更新 display_name、last_login_at，建立 session → 200 `{ account, displayName, role }`。
-- Session：32 bytes 隨機 token、記憶體 Map、`SESSION_TTL_HOURS`、httpOnly + SameSite=Strict cookie `hisp_sid`（`COOKIE_SECURE=true` 加 Secure）。session 內存 account、displayName、role。
+- **登入狀態採 JWT**（`jose`，HS256，金鑰 `JWT_SECRET` ≥ 32 字元；未設定則啟動時產生臨時金鑰並警告，重啟後需重新登入）。
+  - 以 httpOnly + SameSite=Strict cookie `hisp_sid` 傳遞（`COOKIE_SECURE=true` 加 Secure），前端 JS 不接觸 token。
+  - Claims：`sub`=帳號、`uid`=system_users.id、`tv`=token_version、`name`=顯示名稱、`jti`、`iss`=`hisp`、`aud`=`hisp-web`、`iat`、`exp`（`SESSION_TTL_HOURS`）。不放角色、不放任何機密。
+  - 每次請求：驗章（只允許 HS256）、iss/aud/exp → jti 不在撤銷清單 → 查 `system_users`：帳號存在、啟用、`id === uid`、`token_version === tv`。**角色一律以資料庫為準**（升降級立即生效）。
+  - 撤銷：停用帳號 → `token_version + 1`（重新啟用也不會讓舊 token 復活）；刪除帳號 → 查無帳號即失效（同名重建會有新 id）；登出 → jti 加入記憶體撤銷清單至到期。
+  - `system_users` 新增 `token_version INTEGER NOT NULL DEFAULT 0`（啟動時以 QueryInterface 補欄位）。
 - 除 `/api/auth/login`、`/api/auth/captcha`、`/api/auth/me`、`/api/health` 外，所有 `/api/*` 需登入，否則 401 `{ message: '登入逾時，請重新登入' }`。
 
 ### 前端登入頁規則

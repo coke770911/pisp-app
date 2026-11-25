@@ -71,6 +71,11 @@ const envSchema = z.object({
   MSSQL_TRUST_SERVER_CERTIFICATE: boolString(true),
   // 舊的 ADMIN_USERNAME / ADMIN_PASSWORD 已停用；.env 若仍留著，z.object 預設會忽略多餘鍵，不影響啟動
   SESSION_TTL_HOURS: intString(8),
+  // JWT 簽章金鑰（HS256）：至少 32 字元；未設定時啟動會產生臨時金鑰（重啟後全部需重新登入）
+  JWT_SECRET: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? '').trim()),
   COOKIE_SECURE: boolString(false),
   LOGIN_MIN_DELAY_MS: intString(1500),
   LOGIN_RATE_LIMIT: intString(10),

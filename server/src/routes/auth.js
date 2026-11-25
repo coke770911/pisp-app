@@ -8,7 +8,7 @@
  *  3. 呼叫 portal 驗證帳密（無論帳號是否在白名單都呼叫，讓成本一致）
  *  4. portal 失敗或帳號不在白名單／已停用 → 一律 401 同訊息
  *  5. 所有失敗回應統一延遲到 LOGIN_MIN_DELAY_MS 下限
- *  6. 成功：更新 display_name、last_login_at，建立 session
+ *  6. 成功：更新 display_name、last_login_at，簽發 JWT（httpOnly cookie）
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -17,10 +17,9 @@ import {
   SESSION_COOKIE,
   SESSION_TTL_MS,
   UNAUTHORIZED_MESSAGE,
-  createSession,
-  destroySession,
-  getSession,
-  readSessionToken,
+  authenticate,
+  issueToken,
+  revokeRequestToken,
 } from '../middleware/auth.js';
 import { clientIp, createRateLimiter } from '../middleware/rateLimit.js';
 import { SystemUser, normalizeAccount } from '../models/index.js';
@@ -140,25 +139,25 @@ authRouter.post('/login', loginLimiter.middleware, async (req, res) => {
   const displayName = portal.displayName || u.display_name || u.account;
   await user.update({ display_name: portal.displayName || u.display_name, last_login_at: new Date() });
 
-  // 舊 session 作廢、清除此 IP 的嘗試計數
-  destroySession(readSessionToken(req));
+  // 舊 token 撤銷、清除此 IP 的嘗試計數
+  await revokeRequestToken(req);
   loginLimiter.reset(clientIp(req));
-  const token = createSession({ account: u.account, displayName, role: u.role });
+  const token = await issueToken({ id: u.id, account: u.account, displayName, tokenVersion: u.token_version });
   res.cookie(SESSION_COOKIE, token, { ...cookieOptions(), maxAge: SESSION_TTL_MS });
   res.json({ account: u.account, displayName, role: u.role });
 });
 
-authRouter.post('/logout', (req, res) => {
-  destroySession(readSessionToken(req));
+authRouter.post('/logout', async (req, res) => {
+  await revokeRequestToken(req);
   res.clearCookie(SESSION_COOKIE, cookieOptions());
   res.json({ ok: true });
 });
 
-authRouter.get('/me', (req, res) => {
-  const session = getSession(readSessionToken(req));
-  if (!session) {
+authRouter.get('/me', async (req, res) => {
+  const user = await authenticate(req);
+  if (!user) {
     res.status(401).json({ message: UNAUTHORIZED_MESSAGE });
     return;
   }
-  res.json({ account: session.account, displayName: session.displayName, role: session.role });
+  res.json({ account: user.account, displayName: user.displayName, role: user.role });
 });
