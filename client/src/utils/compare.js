@@ -11,7 +11,7 @@
  * @property {boolean} isNew        新進（上月無此身分證號）
  * @property {boolean} employeeNoChanged 職員編號變動（同一身分證號，上月與本月職員編號不同）
  * @property {string | null} previousEmployeeNo 上月職員編號（無上月資料時為 null）
- * @property {boolean} baseChanged  本薪變動
+ * @property {boolean} baseChanged  基準變動（基準來源名稱或基準薪資不同）
  * @property {boolean} itemsChanged 加項變動（名稱、金額或數量不同）
  * @property {boolean} typeChanged  投保別變動
  * @property {boolean} pensionChanged 勞退自提率變動
@@ -72,7 +72,9 @@ function itemsSignature(p) {
 export function compareWithPrevious(current, previous) {
   if (!previous) return { ...NO_CHANGE, isNew: true, any: true };
   const employeeNoChanged = current.employee_no.trim() !== previous.employee_no.trim();
-  const baseChanged = current.base_salary !== previous.base_salary;
+  const baseChanged =
+    current.base_salary !== previous.base_salary ||
+    current.base_source_name.trim() !== previous.base_source_name.trim();
   const itemsChanged = itemsSignature(current) !== itemsSignature(previous);
   const typeChanged = current.insurance_type !== previous.insurance_type;
   const pensionChanged = current.pension_rate !== previous.pension_rate;

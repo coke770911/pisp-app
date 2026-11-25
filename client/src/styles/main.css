@@ -825,9 +825,9 @@ h4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-/* 本薪／投保別／勞退自提／總薪資 */
+/* 投保別／勞退自提／總薪資（薪資來源改於下方清單編輯） */
 .editor-grid-pay {
-  grid-template-columns: 180px minmax(0, 1fr) 200px 240px;
+  grid-template-columns: minmax(0, 1fr) 200px 240px;
 }
 
 .field-hint {
@@ -862,6 +862,18 @@ h4 {
 .items-table {
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
+}
+
+/* 薪資來源名稱欄：輸入框 + 基準標籤 */
+.source-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-name-cell .input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .prev-box {

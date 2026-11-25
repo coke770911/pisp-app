@@ -4,6 +4,7 @@
  * 外部輸入一律先經 zod 驗證，再以明確型別使用。
  */
 import { z } from 'zod';
+import { baseSourceName } from '@shared/splitCalc.js';
 
 /** 寬鬆整數：後端可能回傳數字字串，統一轉為整數 */
 const int = z.coerce.number().int();
@@ -101,6 +102,12 @@ export const PayrollSchema = z.object({
   birthday: z.string().nullable().optional(),
   insurance_type: InsuranceTypeSchema,
   base_salary: int,
+  /** 基準（Step 0）薪資來源名稱；舊資料缺值或空白時視為「本薪」 */
+  base_source_name: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => baseSourceName(v)),
   /** 勞退自提率（%，0~6）；舊資料缺值時視為 0（超出範圍不擋，計算時由 normalizePensionRate 視為 0） */
   pension_rate: int.default(0),
   status: PayrollStatusSchema,

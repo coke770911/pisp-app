@@ -3,7 +3,7 @@
  * HISP 逐筆疊加拆帳核心演算法（前後端共用，純函式、無 I/O）。
  *
  * 規則：
- *  - Step 0：以「本薪」對照級距，算出基準級距與基準保費（全數歸屬本薪）。
+ *  - Step 0：以第一個薪資來源（基準，base_source_name，預設「本薪」）對照級距，算出基準級距與基準保費（全數歸屬該來源）。
  *  - Step N：累計薪資 += 第 N+1 個薪資來源金額，重新對照級距，
  *            差額 = Step N 保費 − Step N-1 保費，歸屬該薪資來源（未跨級距則為 0）。
  *  - 投保別為「公健」者只計算健保：同樣逐筆疊加、對照級距，
@@ -51,7 +51,7 @@ export const PENSION_RATE_MAX = 6;
 
 /**
  * @typedef {Object} SplitStep
- * @property {number} step            0 = 本薪基準，1..N = 第 N 次拆帳
+ * @property {number} step            0 = 基準（第一個薪資來源），1..N = 第 N 次拆帳
  * @property {string} source_name
  * @property {number} amount          本筆金額
  * @property {number} cumulative      累計薪資
@@ -202,9 +202,23 @@ export function mergePensionRates(rates) {
   return filled.length === 0 ? 0 : Math.max(...filled);
 }
 
+/** 預設基準薪資來源名稱（舊資料與未填時使用） */
+export const DEFAULT_BASE_SOURCE_NAME = '本薪';
+
+/**
+ * 基準薪資來源名稱：空白或未提供時為「本薪」。
+ * @param {string | null | undefined} name
+ * @returns {string}
+ */
+export function baseSourceName(name) {
+  const v = typeof name === 'string' ? name.trim() : '';
+  return v === '' ? DEFAULT_BASE_SOURCE_NAME : v;
+}
+
 /**
  * 執行單一人員的逐筆疊加拆帳。
- * @param {{ insurance_type: string, base_salary: number, pension_rate?: number, items: ReadonlyArray<SplitInputItem> }} person
+ * @param {{ insurance_type: string, base_salary: number, base_source_name?: string | null, pension_rate?: number, items: ReadonlyArray<SplitInputItem> }} person
+ *        base_source_name：基準（Step 0）薪資來源名稱，未提供或空白視為「本薪」
  *        pension_rate：勞退自提率（%，0~6，未提供視為 0）
  * @param {ReadonlyArray<Bracket>} sortedBrackets 已依 salary_limit 遞增排序
  * @returns {SplitResult}
@@ -214,7 +228,7 @@ export function computeSplit(person, sortedBrackets) {
   const pensionRate = normalizePensionRate(person.pension_rate);
   const bracketMissing = sortedBrackets.length === 0;
   /** @type {SplitInputItem[]} */
-  const sources = [{ source_name: '本薪', amount: Number(person.base_salary) || 0 }, ...person.items];
+  const sources = [{ source_name: baseSourceName(person.base_source_name), amount: Number(person.base_salary) || 0 }, ...person.items];
 
   /** @type {SplitStep[]} */
   const steps = [];

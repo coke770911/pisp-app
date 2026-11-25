@@ -5,7 +5,7 @@
 import ExcelJS from 'exceljs';
 import { z } from 'zod';
 import { HttpError, pad2 } from '../utils/http.js';
-import { PENSION_RATE_MAX, PENSION_RATE_MIN, mergePensionRates } from '../../../shared/splitCalc.js';
+import { PENSION_RATE_MAX, PENSION_RATE_MIN, baseSourceName, mergePensionRates } from '../../../shared/splitCalc.js';
 
 /** 錯誤訊息最多列出幾項 */
 const MAX_ERRORS_SHOWN = 5;
@@ -303,9 +303,6 @@ const DETAIL_HEADER_MAP = Object.freeze({
 /** @type {ReadonlyArray<DetailKey>} */
 const DETAIL_OPTIONAL_KEYS = Object.freeze(['pension_rate']);
 
-/** 本薪的薪資來源名稱 */
-export const BASE_SOURCE_NAME = '本薪';
-
 /**
  * 解析勞退自提率儲存格。
  *  - 空白 → null（未填）
@@ -364,7 +361,8 @@ const detailRowSchema = z.object({
  * @property {string} id_number
  * @property {string} birthday
  * @property {'勞健' | '公健'} insurance_type
- * @property {number} base_salary
+ * @property {string} base_source_name  Step 0（基準）薪資來源名稱 = 該人員第一筆來源
+ * @property {number} base_salary       Step 0（基準）薪資金額
  * @property {number} pension_rate  勞退自提率（%，0~6）
  * @property {number} source_order
  * @property {{ source_name: string, amount: number }[]} items
@@ -501,21 +499,16 @@ export async function parsePayrollWorkbook(buffer, year, month) {
         `第 ${formatRowNos(rowNos)} 列為同一人員（同一身分證號），但${diffFields.join('／')}不一致，以第 ${rowNos[0]} 列（職員編號 ${employeeNo}）為準`,
       );
     }
-    let baseIndex = rows.findIndex((x) => x.source_name === BASE_SOURCE_NAME);
-    if (baseIndex < 0) {
-      baseIndex = 0;
-      warnings.push(`職員編號 ${employeeNo} 沒有「本薪」列，以第一筆「${first.source_name}」作為本薪`);
-    }
-    const items = rows
-      .filter((_x, i) => i !== baseIndex)
-      .map((x) => ({ source_name: x.source_name, amount: x.amount }));
+    // 每人第一筆薪資來源為 Step 0（基準），其餘依 Excel 順序為 Step 1..N
+    const items = rows.slice(1).map((x) => ({ source_name: x.source_name, amount: x.amount }));
     persons.push({
       employee_no: employeeNo,
       name: first.name,
       id_number: idNumber,
       birthday: first.birthday,
       insurance_type: first.insurance_type,
-      base_salary: rows[baseIndex].amount,
+      base_source_name: first.source_name,
+      base_salary: first.amount,
       pension_rate: mergePensionRates(rates),
       source_order: order,
       items,
@@ -534,13 +527,14 @@ export async function parsePayrollWorkbook(buffer, year, month) {
  * @property {string} id_number
  * @property {string} birthday
  * @property {string} insurance_type
+ * @property {string} base_source_name
  * @property {number} base_salary
  * @property {number} pension_rate
  * @property {{ source_name: string, amount: number }[]} items
  */
 
 /**
- * 產生 9 欄個人所得明細 xlsx（本薪一列 + 每個 item 一列；勞退自提每列都寫該人員的自提率）。
+ * 產生 9 欄個人所得明細 xlsx（基準來源一列 + 每個 item 一列；勞退自提每列都寫該人員的自提率）。
  * @param {ReadonlyArray<ExportPerson>} persons
  * @returns {Promise<Uint8Array>}
  */
@@ -571,7 +565,7 @@ export async function buildPayrollWorkbook(persons) {
       insurance_type: p.insurance_type,
       pension_rate: p.pension_rate,
     };
-    ws.addRow({ ...base, source_name: BASE_SOURCE_NAME, amount: p.base_salary });
+    ws.addRow({ ...base, source_name: baseSourceName(p.base_source_name), amount: p.base_salary });
     for (const item of p.items) ws.addRow({ ...base, source_name: item.source_name, amount: item.amount });
   }
   styleHeader(ws);

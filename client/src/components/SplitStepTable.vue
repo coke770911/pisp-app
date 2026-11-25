@@ -86,7 +86,7 @@ function diffClass(n, step) {
           :class="{ 'row-base': r.step.step === 0, 'row-crossed': r.crossed }"
         >
           <td class="nowrap">
-            <template v-if="r.step.step === 0">Step 0 <span class="tag tag-base">本薪基準</span></template>
+            <template v-if="r.step.step === 0">Step 0 <span class="tag tag-base">基準</span></template>
             <template v-else>
               Step {{ r.step.step }}
               <span v-if="r.crossed" class="tag tag-cross">跨級距</span>

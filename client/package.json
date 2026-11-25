@@ -1,6 +1,6 @@
 {
   "name": "hr-ins-split-client",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "HISP - 人事勞健保加退拆帳系統（前端）",

@@ -4,7 +4,7 @@
  */
 import { Op } from 'sequelize';
 import { MonthlyPayroll, MonthlyPayrollItem, PAYROLL_STATUS } from '../models/index.js';
-import { normalizePensionRate } from '../../../shared/splitCalc.js';
+import { baseSourceName, normalizePensionRate } from '../../../shared/splitCalc.js';
 
 /** MSSQL 單一查詢參數上限約 2100，IN 條件分批查詢 */
 const IN_CHUNK_SIZE = 1000;
@@ -27,6 +27,7 @@ const IN_CHUNK_SIZE = 1000;
  * @property {string} id_number
  * @property {string} birthday
  * @property {string} insurance_type
+ * @property {string} base_source_name  Step 0（基準）薪資來源名稱
  * @property {number} base_salary
  * @property {number} pension_rate  勞退自提率（%，0~6）
  * @property {string} status
@@ -95,6 +96,8 @@ function toDto(row, items) {
     id_number: p.id_number,
     birthday: p.birthday,
     insurance_type: p.insurance_type,
+    // 空白（理論上不會出現）一律回「本薪」
+    base_source_name: baseSourceName(p.base_source_name),
     base_salary: p.base_salary,
     // 舊資料或異常值一律正規化為 0~6 整數
     pension_rate: normalizePensionRate(p.pension_rate),

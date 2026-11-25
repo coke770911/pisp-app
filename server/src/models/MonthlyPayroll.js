@@ -4,6 +4,7 @@
  */
 import { DataTypes } from 'sequelize';
 import { sequelize } from '../config/database.js';
+import { DEFAULT_BASE_SOURCE_NAME } from '../../../shared/splitCalc.js';
 
 /** 月份狀態（以 STRING(20) 儲存，不使用 ENUM） */
 export const PAYROLL_STATUS = Object.freeze({
@@ -24,7 +25,8 @@ export const PAYROLL_STATUS = Object.freeze({
  * @property {string} id_number
  * @property {string} birthday        原樣保存（例：民國 0750101）
  * @property {string} insurance_type  勞健 / 公健
- * @property {number} base_salary
+ * @property {string} base_source_name  Step 0（基準）的薪資來源名稱（每人第一筆來源；舊資料為「本薪」）
+ * @property {number} base_salary       Step 0（基準）的薪資金額
  * @property {number} pension_rate    勞退自提率（%，0~6）
  * @property {string} status          draft / confirmed
  * @property {number} source_order    Excel 中首次出現順序
@@ -70,6 +72,8 @@ export const MonthlyPayroll = sequelize.define(
     id_number: { type: DataTypes.STRING(20), allowNull: false },
     birthday: { type: DataTypes.STRING(20), allowNull: false, defaultValue: '' },
     insurance_type: { type: DataTypes.STRING(10), allowNull: false },
+    // Step 0（基準）的薪資來源名稱：每人第一筆薪資來源（舊資料遷移時預設「本薪」）
+    base_source_name: { type: DataTypes.STRING(50), allowNull: false, defaultValue: DEFAULT_BASE_SOURCE_NAME },
     base_salary: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     // 勞退自提率（%，0~6；未填為 0）
     pension_rate: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },

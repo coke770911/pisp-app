@@ -1,7 +1,14 @@
 <script setup>
 // @ts-check
 import { ref, computed, watch, nextTick, onMounted } from 'vue';
-import { computeSplit, normalizePensionRate, PENSION_RATE_MIN, PENSION_RATE_MAX } from '@shared/splitCalc.js';
+import {
+  computeSplit,
+  normalizePensionRate,
+  baseSourceName,
+  DEFAULT_BASE_SOURCE_NAME,
+  PENSION_RATE_MIN,
+  PENSION_RATE_MAX,
+} from '@shared/splitCalc.js';
 import SplitStepTable from './SplitStepTable.vue';
 import { updatePayroll, createPayroll } from '../api/index.js';
 import { ApiError, errorMessage } from '../api/http.js';
@@ -29,10 +36,9 @@ import { toast } from '../stores/dialog.js';
  * @property {string} name
  * @property {string} id_number
  * @property {string} birthday
- * @property {string} base_salary
  * @property {InsuranceType} insurance_type
  * @property {number} pension_rate 勞退自提率（%，0~6）
- * @property {DraftItem[]} items
+ * @property {DraftItem[]} sources 依序排列的全部薪資來源；第一列 = 基準（Step 0），其餘依序疊加
  */
 
 /** 勞退自提率選項：常用 0、1、3、6 排前面，其餘 0~6 整數依序列在後 */
@@ -86,10 +92,9 @@ function draftFromPayroll(p) {
       name: '',
       id_number: '',
       birthday: '',
-      base_salary: '0',
       insurance_type: '勞健',
       pension_rate: 0,
-      items: [],
+      sources: [{ key: ++itemSeq, source_name: DEFAULT_BASE_SOURCE_NAME, amount: '0' }],
     };
   }
   return {
@@ -97,13 +102,33 @@ function draftFromPayroll(p) {
     name: p.name,
     id_number: p.id_number ?? '',
     birthday: p.birthday ?? '',
-    base_salary: String(p.base_salary),
     insurance_type: p.insurance_type,
     pension_rate: normalizePensionRate(p.pension_rate),
-    items: [...p.items]
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-      .map((it) => ({ key: ++itemSeq, source_name: it.source_name, amount: String(it.amount) })),
+    sources: sourcesFromPayroll(p),
   };
+}
+
+/**
+ * 將人員資料攤平為依序排列的薪資來源列（第一列 = 基準）。
+ * @param {Payroll} p
+ * @returns {DraftItem[]}
+ */
+function sourcesFromPayroll(p) {
+  /** @type {DraftItem[]} */
+  const rows = [{ key: ++itemSeq, source_name: baseSourceName(p.base_source_name), amount: String(p.base_salary) }];
+  for (const it of sortedItems(p)) {
+    rows.push({ key: ++itemSeq, source_name: it.source_name, amount: String(it.amount) });
+  }
+  return rows;
+}
+
+/**
+ * 依 sort_order 排序的其他薪資來源。
+ * @param {Payroll} p
+ * @returns {import('../api/schemas.js').PayrollItem[]}
+ */
+function sortedItems(p) {
+  return [...p.items].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 }
 
 /** @type {import('vue').Ref<Draft>} */
@@ -125,14 +150,17 @@ const locked = computed(() => props.readonly || saving.value);
  * @returns {PayrollUpdateBody}
  */
 function normalize(d) {
+  const [base, ...rest] = d.sources;
   return {
     employee_no: d.employee_no.trim(),
     name: d.name.trim(),
     birthday: d.birthday.trim(),
-    base_salary: toInt(d.base_salary) ?? 0,
+    // 第一列 = 基準（Step 0）；其餘依序為 items（順序即 sort_order）
+    base_source_name: base ? baseSourceName(base.source_name) : DEFAULT_BASE_SOURCE_NAME,
+    base_salary: base ? (toInt(base.amount) ?? 0) : 0,
     insurance_type: d.insurance_type,
     pension_rate: normalizePensionRate(d.pension_rate),
-    items: d.items.map((it) => ({ source_name: it.source_name.trim(), amount: toInt(it.amount) ?? 0 })),
+    items: rest.map((it) => ({ source_name: it.source_name.trim(), amount: toInt(it.amount) ?? 0 })),
   };
 }
 
@@ -147,10 +175,9 @@ function draftKey(d) {
     n: d.name.trim(),
     id: d.id_number.trim(),
     bd: d.birthday.trim(),
-    b: d.base_salary.trim(),
     t: d.insurance_type,
     pr: d.pension_rate,
-    i: d.items.map((it) => [it.source_name, it.amount.trim()]),
+    s: d.sources.map((it) => [it.source_name, it.amount.trim()]),
   });
 }
 
@@ -179,24 +206,30 @@ const validationErrors = computed(() => {
   if (d.name.trim() === '') errs.push('請輸入姓名');
   else if (d.name.trim().length > 50) errs.push('姓名不可超過 50 字');
   if (d.birthday.trim().length > 20) errs.push('生日不可超過 20 字');
-  const base = toInt(d.base_salary);
-  if (base === null) errs.push('本薪必須為整數');
-  else if (base < 0) errs.push('本薪不可為負數');
-  d.items.forEach((it, i) => {
+  if (d.sources.length === 0) errs.push('至少需有一筆薪資來源（基準）');
+  d.sources.forEach((it, i) => {
     const name = it.source_name.trim();
     if (name === '') errs.push(`第 ${i + 1} 筆薪資來源未填名稱`);
     else if (name.length > 50) errs.push(`第 ${i + 1} 筆薪資來源名稱超過 50 字`);
-    if (toInt(it.amount) === null) errs.push(`第 ${i + 1} 筆金額必須為整數`);
+    const amount = toInt(it.amount);
+    if (i === 0) {
+      if (amount === null) errs.push('基準薪資必須為整數');
+      else if (amount < 0) errs.push('基準薪資不可為負數');
+    } else if (amount === null) {
+      errs.push(`第 ${i + 1} 筆金額必須為整數`);
+    }
   });
   return errs;
 });
 
 /**
  * @param {string} v
+ * @param {boolean} [isBase] 是否為基準列（基準不可為負數）
  * @returns {boolean}
  */
-function invalidAmount(v) {
-  return toInt(v) === null;
+function invalidAmount(v, isBase = false) {
+  const n = toInt(v);
+  return n === null || (isBase && n < 0);
 }
 
 /** 即時拆帳結果（每次異動即以共用演算法重算） */
@@ -216,19 +249,17 @@ const previousEmployeeNoChanged = computed(() => {
   return prev.employee_no.trim() !== cur.employee_no.trim() ? prev.employee_no : null;
 });
 
-/** 上月加項（依 sort_order） */
-const previousItems = computed(() =>
-  props.previous ? [...props.previous.items].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)) : [],
-);
+/** 上月其他薪資來源（基準以外，依 sort_order） */
+const previousItems = computed(() => (props.previous ? sortedItems(props.previous) : []));
 
-/** 上月加項合計 */
+/** 上月總薪資（基準 + 其他來源） */
 const previousTotal = computed(() =>
   props.previous ? props.previous.base_salary + previousItems.value.reduce((s, it) => s + it.amount, 0) : 0,
 );
 
 /** @returns {Promise<void>} */
 async function addItem() {
-  draft.value.items.push({ key: ++itemSeq, source_name: '', amount: '0' });
+  draft.value.sources.push({ key: ++itemSeq, source_name: '', amount: '0' });
   await nextTick();
   const inputs = itemsBody.value?.querySelectorAll('input.item-name');
   const last = inputs && inputs.length > 0 ? /** @type {HTMLInputElement} */ (inputs[inputs.length - 1]) : null;
@@ -240,7 +271,9 @@ async function addItem() {
  * @returns {void}
  */
 function removeItem(idx) {
-  draft.value.items.splice(idx, 1);
+  // 至少保留一列（基準）
+  if (draft.value.sources.length <= 1) return;
+  draft.value.sources.splice(idx, 1);
 }
 
 /**
@@ -249,20 +282,17 @@ function removeItem(idx) {
  * @returns {void}
  */
 function moveItem(idx, dir) {
-  const items = draft.value.items;
+  const items = draft.value.sources;
   const target = idx + dir;
   if (target < 0 || target >= items.length) return;
   const [it] = items.splice(idx, 1);
   items.splice(target, 0, it);
 }
 
-/** 以上月加項取代目前加項（僅填入草稿，仍需按儲存） */
+/** 以上月全部薪資來源（含基準與順序）取代目前來源（僅填入草稿，仍需按儲存） */
 function applyPreviousItems() {
-  draft.value.items = previousItems.value.map((it) => ({
-    key: ++itemSeq,
-    source_name: it.source_name,
-    amount: String(it.amount),
-  }));
+  if (!props.previous) return;
+  draft.value.sources = sourcesFromPayroll(props.previous);
 }
 
 /** @returns {void} */
@@ -362,16 +392,6 @@ defineExpose({ isDirty });
     </div>
 
     <div class="editor-grid editor-grid-pay">
-      <label class="field">
-        <span class="field-label">本薪</span>
-        <input
-          v-model="draft.base_salary"
-          class="input num"
-          :class="{ invalid: invalidAmount(draft.base_salary) }"
-          inputmode="numeric"
-          :disabled="locked"
-        />
-      </label>
       <div class="field">
         <span class="field-label">投保別</span>
         <div class="radio-group">
@@ -405,14 +425,8 @@ defineExpose({ isDirty });
     <div v-if="!isNew" class="prev-box">
       <div class="prev-head">
         <strong>{{ previousLabel }}資料對照</strong>
-        <button
-          v-if="previous && previousItems.length > 0"
-          type="button"
-          class="btn btn-sm"
-          :disabled="locked"
-          @click="applyPreviousItems"
-        >
-          套用上月加項
+        <button v-if="previous" type="button" class="btn btn-sm" :disabled="locked" @click="applyPreviousItems">
+          套用上月薪資來源
         </button>
       </div>
       <div v-if="!previous" class="muted">上月無此人員（新進）</div>
@@ -430,9 +444,9 @@ defineExpose({ isDirty });
           </strong>
         </span>
         <span>
-          本薪 <strong class="num">{{ formatNumber(previous.base_salary) }}</strong>
+          基準 {{ previous.base_source_name }} <strong class="num">{{ formatNumber(previous.base_salary) }}</strong>
         </span>
-        <span v-if="previousItems.length === 0" class="muted">無加項</span>
+        <span v-if="previousItems.length === 0" class="muted">無其他薪資來源</span>
         <span v-for="it in previousItems" :key="`${it.sort_order}-${it.source_name}`" class="prev-item">
           {{ it.source_name }} <strong class="num">{{ formatNumber(it.amount) }}</strong>
         </span>
@@ -443,7 +457,7 @@ defineExpose({ isDirty });
     </div>
 
     <div class="section-head">
-      <h4>其他薪資來源（依序疊加）</h4>
+      <h4>薪資來源（第一筆為基準 Step 0，其餘依序疊加）</h4>
       <button type="button" class="btn btn-sm" :disabled="locked" @click="addItem">＋ 新增薪資來源</button>
     </div>
     <table class="table table-compact items-table">
@@ -456,27 +470,28 @@ defineExpose({ isDirty });
         </tr>
       </thead>
       <tbody ref="itemsBody">
-        <tr v-if="draft.items.length === 0">
-          <td colspan="4" class="empty-row">無其他薪資來源（僅本薪）</td>
-        </tr>
-        <tr v-for="(it, idx) in draft.items" :key="it.key">
+        <tr v-for="(it, idx) in draft.sources" :key="it.key">
           <td class="num muted">{{ idx + 1 }}</td>
           <td>
-            <input
-              v-model="it.source_name"
-              class="input input-sm item-name"
-              :class="{ invalid: it.source_name.trim() === '' }"
-              maxlength="50"
-              placeholder="例：助理加給"
-              :disabled="locked"
-            />
+            <div class="source-name-cell">
+              <input
+                v-model="it.source_name"
+                class="input input-sm item-name"
+                :class="{ invalid: it.source_name.trim() === '' }"
+                maxlength="50"
+                :placeholder="idx === 0 ? '例：本薪' : '例：助理加給'"
+                :disabled="locked"
+              />
+              <span v-if="idx === 0" class="tag tag-base nowrap">基準 Step 0</span>
+            </div>
           </td>
           <td>
             <input
               v-model="it.amount"
               class="input input-sm num"
-              :class="{ invalid: invalidAmount(it.amount) }"
+              :class="{ invalid: invalidAmount(it.amount, idx === 0) }"
               inputmode="numeric"
+              :title="idx === 0 ? '基準薪資（整數，不可為負數）' : undefined"
               :disabled="locked"
             />
           </td>
@@ -488,12 +503,18 @@ defineExpose({ isDirty });
               type="button"
               class="btn btn-icon"
               title="下移"
-              :disabled="locked || idx === draft.items.length - 1"
+              :disabled="locked || idx === draft.sources.length - 1"
               @click="moveItem(idx, 1)"
             >
               ▼
             </button>
-            <button type="button" class="btn btn-icon btn-icon-danger" title="刪除" :disabled="locked" @click="removeItem(idx)">
+            <button
+              type="button"
+              class="btn btn-icon btn-icon-danger"
+              :title="draft.sources.length <= 1 ? '至少需保留一筆薪資來源' : '刪除'"
+              :disabled="locked || draft.sources.length <= 1"
+              @click="removeItem(idx)"
+            >
               刪除
             </button>
           </td>

@@ -16,6 +16,7 @@ import {
 import { MonthlyPayrollItem } from './MonthlyPayrollItem.js';
 import { SystemUser, USER_ROLES, normalizeAccount } from './SystemUser.js';
 import { env } from '../config/env.js';
+import { DEFAULT_BASE_SOURCE_NAME } from '../../../shared/splitCalc.js';
 
 MonthlyPayroll.hasMany(MonthlyPayrollItem, { foreignKey: 'payroll_id', as: 'items', onDelete: 'CASCADE', hooks: true });
 MonthlyPayrollItem.belongsTo(MonthlyPayroll, { foreignKey: 'payroll_id', as: 'payroll', onDelete: 'CASCADE' });
@@ -54,6 +55,24 @@ async function migrateAddTokenVersion() {
     defaultValue: 0,
   });
   console.log('[db] 已為 system_users 新增 token_version 欄位');
+}
+
+/**
+ * monthly_payrolls 補上 base_source_name 欄位（Step 0 基準的薪資來源名稱）。
+ * 舊資料的 Step 0 一律是「本薪」，因此既有列預設為「本薪」。只用 QueryInterface API。
+ * @returns {Promise<void>}
+ */
+async function migrateAddBaseSourceName() {
+  const qi = sequelize.getQueryInterface();
+  const tableName = MonthlyPayroll.getTableName();
+  const columns = await qi.describeTable(tableName);
+  if ('base_source_name' in columns) return;
+  await qi.addColumn(tableName, 'base_source_name', {
+    type: DataTypes.STRING(50),
+    allowNull: false,
+    defaultValue: DEFAULT_BASE_SOURCE_NAME,
+  });
+  console.log(`[db] 已為 monthly_payrolls 新增 base_source_name 欄位（既有資料預設「${DEFAULT_BASE_SOURCE_NAME}」）`);
 }
 
 /** showIndex 回傳結構（各方言皆有 name；其他欄位不使用） */
@@ -217,6 +236,7 @@ export async function initDatabase() {
   await migrateAddPensionRate();
   await migrateIdNumberKey();
   await migrateAddTokenVersion();
+  await migrateAddBaseSourceName();
   await ensureBootstrapAdmins(env.BOOTSTRAP_ADMINS);
 }
 

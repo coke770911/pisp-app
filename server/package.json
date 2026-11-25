@@ -1,6 +1,6 @@
 {
   "name": "hr-ins-split-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "HISP - 人事勞健保加退拆帳系統（後端 API）",
   "main": "src/index.js",

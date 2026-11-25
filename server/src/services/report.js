@@ -4,9 +4,16 @@
  * 計算一律呼叫 shared/splitCalc.js，不得在此複製拆帳邏輯。
  */
 import ExcelJS from 'exceljs';
-import { FEE_LABELS, SPLIT_FEE_KEYS, computeSplit, sortBrackets, zeroFees } from '../../../shared/splitCalc.js';
-import { INSURANCE_TYPE_LABELS } from '../../../shared/splitCalc.js';
-import { BASE_SOURCE_NAME, styleHeader, workbookToBytes } from './excel.js';
+import {
+  FEE_LABELS,
+  INSURANCE_TYPE_LABELS,
+  SPLIT_FEE_KEYS,
+  baseSourceName,
+  computeSplit,
+  sortBrackets,
+  zeroFees,
+} from '../../../shared/splitCalc.js';
+import { styleHeader, workbookToBytes } from './excel.js';
 
 /** @typedef {import('../../../shared/splitCalc.js').Bracket} Bracket */
 /** @typedef {import('../../../shared/splitCalc.js').Fees} Fees */
@@ -120,9 +127,8 @@ export async function buildSplitReport(payrolls, brackets) {
 
   // ── 工作表 2：薪資來源彙總（先建立工作表以確保順序，資料最後寫入） ──
   const ws2 = wb.addWorksheet('薪資來源彙總');
-  /** @type {Map<string, SourceSummary>} */
+  /** @type {Map<string, SourceSummary>} 依實際薪資來源名稱分組（Map 保留首次出現順序） */
   const bySource = new Map();
-  bySource.set(BASE_SOURCE_NAME, { source_name: BASE_SOURCE_NAME, count: 0, amount: 0, fees: zeroFees() });
 
   // ── 工作表 3：人員彙總 ──
   const ws3 = wb.addWorksheet('人員彙總');
@@ -131,7 +137,8 @@ export async function buildSplitReport(payrolls, brackets) {
     { header: '姓名', key: 'name', width: 12 },
     { header: '身分證號', key: 'id_number', width: 14 },
     { header: '投保別', key: 'insurance_type', width: 16 },
-    { header: '本薪', key: 'base_salary', width: 12 },
+    { header: '基準來源', key: 'base_source_name', width: 18 },
+    { header: '基準薪資', key: 'base_salary', width: 12 },
     { header: '總薪資', key: 'total_salary', width: 12 },
     { header: '最終級距', key: 'salary_limit', width: 12 },
     ...feeColumnDefs(true),
@@ -143,8 +150,15 @@ export async function buildSplitReport(payrolls, brackets) {
   let grandSalary = 0;
 
   for (const p of payrolls) {
+    const baseName = baseSourceName(p.base_source_name);
     const result = computeSplit(
-      { insurance_type: p.insurance_type, base_salary: p.base_salary, pension_rate: p.pension_rate, items: p.items },
+      {
+        insurance_type: p.insurance_type,
+        base_source_name: baseName,
+        base_salary: p.base_salary,
+        pension_rate: p.pension_rate,
+        items: p.items,
+      },
       sorted,
     );
     const last = result.steps[result.steps.length - 1];
@@ -157,7 +171,7 @@ export async function buildSplitReport(payrolls, brackets) {
           employee_no: p.employee_no,
           name: p.name,
           insurance_type: typeLabel(p.insurance_type),
-          step: s.step === 0 ? `Step 0 ${BASE_SOURCE_NAME}` : `Step ${s.step}`,
+          step: s.step === 0 ? 'Step 0 基準' : `Step ${s.step}`,
           source_name: s.source_name,
           amount: s.amount,
           cumulative: s.cumulative,
@@ -165,8 +179,8 @@ export async function buildSplitReport(payrolls, brackets) {
           ...feeCells(s.diff),
           [RATE_KEY]: p.pension_rate,
         });
-        // 薪資來源彙總：Step 0 一律歸「本薪」
-        const name = s.step === 0 ? BASE_SOURCE_NAME : s.source_name;
+        // 薪資來源彙總：依實際名稱分組；Step 0 歸入其基準來源名稱，與同名加項合併
+        const name = s.step === 0 ? baseName : s.source_name;
         let sum = bySource.get(name);
         if (!sum) {
           sum = { source_name: name, count: 0, amount: 0, fees: zeroFees() };
@@ -194,6 +208,7 @@ export async function buildSplitReport(payrolls, brackets) {
       name: p.name,
       id_number: p.id_number,
       insurance_type: typeLabel(p.insurance_type),
+      base_source_name: baseName,
       base_salary: p.base_salary,
       total_salary: totalSalary,
       salary_limit: last ? last.salary_limit : 0,

@@ -47,7 +47,8 @@ const OkSchema = OkResultSchema;
  * @property {string} employee_no 職員編號（必填，≤ 20）
  * @property {string} name
  * @property {string} birthday
- * @property {number} base_salary
+ * @property {string} base_source_name 基準（Step 0）薪資來源名稱（1~50 字）
+ * @property {number} base_salary 基準薪資（第一個薪資來源金額，整數 ≥ 0）
  * @property {InsuranceType} insurance_type
  * @property {number} pension_rate 勞退自提率（%，0~6）
  * @property {{ source_name: string, amount: number }[]} items 順序即 sort_order

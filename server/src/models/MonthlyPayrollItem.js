@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * 逐筆疊加項目（本薪以外的薪資來源）。
+ * 逐筆疊加項目（基準 Step 0 以外的薪資來源，依 sort_order 為 Step 1..N）。
  */
 import { DataTypes } from 'sequelize';
 import { sequelize } from '../config/database.js';

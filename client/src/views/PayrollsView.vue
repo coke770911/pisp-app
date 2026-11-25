@@ -798,7 +798,7 @@ onBeforeUnmount(() => {
           <div class="start-num">A</div>
           <h4>沿用上個月資料</h4>
           <p class="muted">
-            將 {{ prevLabel }} 的人員、本薪與加項直接複製為本月（審核中），再逐人調整。
+            將 {{ prevLabel }} 的人員與全部薪資來源（含基準）直接複製為本月（審核中），再逐人調整。
             <template v-if="hasPrev">上月共 {{ prevPayrolls.length }} 人。</template>
             <template v-else>（{{ prevLabel }} 無資料）</template>
           </p>
@@ -879,7 +879,7 @@ onBeforeUnmount(() => {
           <option value="changed">只看有變動</option>
           <option value="new">新進</option>
           <option value="employeeNo">職員編號變動</option>
-          <option value="base">本薪變動</option>
+          <option value="base">基準變動</option>
           <option value="items">加項變動</option>
           <option value="pension">自提率變動</option>
         </select>
@@ -898,7 +898,7 @@ onBeforeUnmount(() => {
                 <th>投保別</th>
                 <th class="num">自提率</th>
                 <th>與上月比對</th>
-                <th class="num">本薪</th>
+                <th class="num">基準薪資</th>
                 <th class="num">加項數</th>
                 <th class="num">總薪資</th>
                 <th class="num">最終級距</th>
@@ -935,12 +935,12 @@ onBeforeUnmount(() => {
                   >
                     職員編號變動
                   </span>
-                  <span v-if="r.change.baseChanged" class="tag tag-change">本薪變動</span>
+                  <span v-if="r.change.baseChanged" class="tag tag-change">基準變動</span>
                   <span v-if="r.change.itemsChanged" class="tag tag-change">加項變動</span>
                   <span v-if="r.change.typeChanged" class="tag tag-change">投保別變動</span>
                   <span v-if="r.change.pensionChanged" class="tag tag-change">自提率變動</span>
                 </td>
-                <td class="num">{{ formatNumber(r.p.base_salary) }}</td>
+                <td class="num" :title="`基準來源：${r.p.base_source_name}`">{{ formatNumber(r.p.base_salary) }}</td>
                 <td class="num">{{ r.p.items.length }}</td>
                 <td class="num">{{ formatNumber(r.totalSalary) }}</td>
                 <td class="num">{{ r.split.bracketMissing ? '—' : formatNumber(r.finalLimit) }}</td>

@@ -38,6 +38,8 @@ const updateSchema = z.object({
   employee_no: employeeNoSchema,
   name: z.string().trim().max(50),
   birthday: z.string().trim().max(20),
+  // Step 0（基準）的薪資來源名稱：必填 1~50 字（前端把來源清單第一列拆成 base_source_name/base_salary）
+  base_source_name: z.string().trim().min(1).max(50),
   base_salary: intAmount,
   insurance_type: z.union([z.literal('勞健'), z.literal('公健')]),
   // PUT 未帶時保留原值
@@ -73,6 +75,7 @@ const copySchema = z.object({
  * @property {string} id_number
  * @property {string} birthday
  * @property {string} insurance_type
+ * @property {string} base_source_name  Step 0（基準）薪資來源名稱
  * @property {number} base_salary
  * @property {number} pension_rate  勞退自提率（%，0~6）
  * @property {number} source_order
@@ -103,6 +106,7 @@ async function insertPersons(year, month, persons, t) {
         id_number: normalizeIdNumber(p.id_number),
         birthday: p.birthday,
         insurance_type: p.insurance_type,
+        base_source_name: p.base_source_name,
         base_salary: p.base_salary,
         pension_rate: p.pension_rate,
         status: PAYROLL_STATUS.DRAFT,
@@ -262,7 +266,7 @@ payrollsRouter.post('/', async (req, res) => {
   const data = parseInput(
     createSchema,
     req.body,
-    '輸入資料格式錯誤：職員編號與身分證號必填（20 字內）、本薪與金額必須為整數、勞退自提須為 0~6 的整數',
+    '輸入資料格式錯誤：職員編號與身分證號必填（20 字內）、基準薪資來源必填（50 字內）、基準薪資與金額必須為整數、勞退自提須為 0~6 的整數',
   );
   const created = await sequelize
     .transaction(async (t) => {
@@ -292,6 +296,7 @@ payrollsRouter.post('/', async (req, res) => {
           id_number: data.id_number,
           birthday: data.birthday,
           insurance_type: data.insurance_type,
+          base_source_name: data.base_source_name,
           base_salary: data.base_salary,
           pension_rate: data.pension_rate,
           status: PAYROLL_STATUS.DRAFT,
@@ -335,7 +340,7 @@ payrollsRouter.put('/:id', async (req, res) => {
   const data = parseInput(
     updateSchema,
     req.body,
-    '輸入資料格式錯誤：職員編號必填（20 字內），本薪與金額必須為整數，薪資來源為必填（50 字內），勞退自提須為 0~6 的整數',
+    '輸入資料格式錯誤：職員編號必填（20 字內），基準薪資與金額必須為整數，薪資來源（含基準薪資來源）為必填（50 字內），勞退自提須為 0~6 的整數',
   );
 
   const updated = await sequelize.transaction(async (t) => {
@@ -360,6 +365,7 @@ payrollsRouter.put('/:id', async (req, res) => {
         employee_no: data.employee_no,
         name: data.name,
         birthday: data.birthday,
+        base_source_name: data.base_source_name,
         base_salary: data.base_salary,
         insurance_type: data.insurance_type,
         ...(data.pension_rate === undefined ? {} : { pension_rate: data.pension_rate }),

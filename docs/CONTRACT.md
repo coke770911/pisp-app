@@ -30,7 +30,7 @@ pisp-app/
 `roc_year INTEGER`, `salary_limit INTEGER`, `labor_emp`, `labor_school`, `labor_occupational`, `pension_school`, `health_emp`, `health_school`（皆 INTEGER）。唯一複合索引 `(roc_year, salary_limit)`。
 
 ### MonthlyPayroll（月度人員投保主檔）
-`roc_year INTEGER`, `month INTEGER(1~12)`, `employee_no STRING(20)`, `name STRING(50)`, `id_number STRING(20)`, `birthday STRING(20)`（原樣保存，例：民國 `0750101`）, `insurance_type STRING(10)`（`勞健`/`公健`）, `base_salary INTEGER`, `pension_rate INTEGER NOT NULL DEFAULT 0`（勞退自提率 %，0~6）, `status STRING(20)`（`draft`/`confirmed`）, `source_order INTEGER`（Excel 中首次出現順序，用於排序）。
+`roc_year INTEGER`, `month INTEGER(1~12)`, `employee_no STRING(20)`, `name STRING(50)`, `id_number STRING(20)`, `birthday STRING(20)`（原樣保存，例：民國 `0750101`）, `insurance_type STRING(10)`（`勞健`/`公健`）, `base_salary INTEGER`（基準＝第一個薪資來源的金額）, `base_source_name STRING(50) NOT NULL DEFAULT '本薪'`（基準薪資來源名稱；舊資料由 migration 補「本薪」）, `pension_rate INTEGER NOT NULL DEFAULT 0`（勞退自提率 %，0~6）, `status STRING(20)`（`draft`/`confirmed`）, `source_order INTEGER`（Excel 中首次出現順序，用於排序）。
 **人員識別鍵 = 身分證號 `id_number`**（職員編號可能被修改，身分證號不變）。
 - `id_number` 必填、儲存前 trim + 轉大寫、長度 ≤ 20。
 - 唯一索引 `uq_monthly_payrolls_year_month_idno (roc_year, month, id_number)`。
@@ -56,9 +56,9 @@ pisp-app/
   - 舊版 8 欄檔（沒有 `勞退自提` 欄）仍可匯入，全部視為 0，並回傳 warning「檔案沒有勞退自提欄，已全部以 0% 計」。
 - `月份資料` 形如 `11509`（民國年 + 2 位月份），`薪資` 可能為字串。
 - 依 **`身分證號`**（trim + 大寫）歸戶。身分證號空白 → 400 列出列號。同一身分證號多列的職員編號／姓名／投保別不一致 → 以第一列為準並加 warning。不同身分證號使用同一職員編號 → 400（資料錯誤，列出職員編號與列號）。
-- 歸戶後：`薪資來源 === '本薪'` 的列為 `base_salary`（若無則取該員第一筆）；其餘依出現順序成為 items（sort_order 1..N）。若同一人有多筆「本薪」，第一筆為基準，其餘當作加項。
+- 歸戶後：**每人第一列 = 基準（Step 0）**：`base_source_name` = 該列薪資來源、`base_salary` = 該列薪資；其餘依出現順序成為 items（sort_order 1..N）。不再特別尋找名稱為「本薪」的列。
 - 匯入月份以使用者在畫面選擇的 year/month 為準；檔案中 `月份資料` 不一致時不拒絕，回傳 warnings（因為「匯出上月 → 修改 → 匯入本月」是正常流程）。
-- 匯出（上月資料）使用相同 9 欄格式，`月份資料` 寫該筆資料自己的年月（例 `11509`），本薪一列 + 每個 item 一列；`勞退自提` 每一列都寫該人員的 pension_rate。
+- 匯出（上月資料）使用相同 9 欄格式，`月份資料` 寫該筆資料自己的年月（例 `11509`），基準一列（薪資來源 = base_source_name）+ 每個 item 一列，順序與工作臺相同（下載再上傳不會改變基準）；`勞退自提` 每一列都寫該人員的 pension_rate。
 
 ## 計算
 - `勞健`：6 項保費全部計算。
@@ -138,9 +138,9 @@ body `{ account, password, captchaId, captchaCode }`（zod 驗證；格式錯誤
 | GET | `/api/payrolls?year=115&month=9` | `{ year, month, status: 'none'|'draft'|'confirmed', payrolls: Payroll[] }` |
 | POST | `/api/payrolls/import` | multipart: `file`, `year`, `month` → 若該月已 confirmed 回 409；否則交易內整月覆蓋 → `{ year, month, count, laborCount, publicCount, warnings: string[] }` |
 | GET | `/api/payrolls/export?year=115&month=8` | 下載 9 欄 xlsx（含勞退自提），檔名 `個人所得明細_115年08月.xlsx`（無資料回 404） |
-| PUT | `/api/payrolls/:id` | body `{ employee_no, name, birthday, base_salary, insurance_type, pension_rate, items: [{ source_name, amount }] }`（employee_no 必填）（**身分證號不可改**，作為識別鍵；職員編號可改，與同月他人重複回 409「職員編號已被其他人員使用」）（items 順序即 sort_order）；該月 confirmed 回 409 → 回傳更新後 Payroll |
+| PUT | `/api/payrolls/:id` | body `{ employee_no, name, birthday, base_source_name, base_salary, insurance_type, pension_rate, items: [{ source_name, amount }] }`（base_source_name 必填 1~50 字；前端把「薪資來源清單」第一列拆成 base_source_name/base_salary，其餘為 items，故可任意調整含 Step 0 在內的順序）（employee_no 必填）（**身分證號不可改**，作為識別鍵；職員編號可改，與同月他人重複回 409「職員編號已被其他人員使用」）（items 順序即 sort_order）；該月 confirmed 回 409 → 回傳更新後 Payroll |
 | POST | `/api/payrolls/copy` | body `{ fromYear, fromMonth, toYear, toMonth }`：把來源月份（不限狀態）所有人員與加項複製成目標月份 draft；目標月份已 confirmed 回 409；目標已有 draft 資料時需 body `overwrite: true` 否則 409 `{ message: '目標月份已有資料' }`；來源無資料 404 → `{ year, month, count }` |
-| POST | `/api/payrolls` | 新增單一人員 body `{ year, month, employee_no, name, id_number, birthday, insurance_type, base_salary, pension_rate, items }`；該月 confirmed 回 409；同月身分證號重複回 409「本月已有此身分證號的人員」、職員編號與他人重複回 409「職員編號已被其他人員使用」 → 回傳 Payroll（source_order 取該月最大值 +1） |
+| POST | `/api/payrolls` | 新增單一人員 body `{ year, month, employee_no, name, id_number, birthday, insurance_type, base_source_name, base_salary, pension_rate, items }`；該月 confirmed 回 409；同月身分證號重複回 409「本月已有此身分證號的人員」、職員編號與他人重複回 409「職員編號已被其他人員使用」 → 回傳 Payroll（source_order 取該月最大值 +1） |
 | DELETE | `/api/payrolls/:id` | 刪除單一人員（含加項）；該月 confirmed 回 409 → `{ ok: true }` |
 | DELETE | `/api/payrolls?year=115&month=9` | 刪除整月明細（含加項），以便重新匯入；該月無資料 404、confirmed 回 409（需先 reopen）→ `{ year, month, deleted }`（刪除人數） |
 | POST | `/api/payrolls/confirm` | body `{ year, month }` → 條件更新 draft→confirmed（已 confirmed 也回 200，冪等）→ `{ status: 'confirmed' }` |
@@ -151,14 +151,14 @@ body `{ account, password, captchaId, captchaCode }`（zod 驗證；格式錯誤
 ```json
 { "id": 1, "roc_year": 115, "month": 9, "employee_no": "A001", "name": "王小明",
   "id_number": "A123456789", "birthday": "0750101", "insurance_type": "勞健",
-  "base_salary": 45000, "pension_rate": 6, "status": "draft",
+  "base_source_name": "本薪", "base_salary": 45000, "pension_rate": 6, "status": "draft",
   "items": [{ "id": 3, "source_name": "助理加給", "amount": 5000, "sort_order": 1 }] }
 ```
 payrolls 依 `source_order` 排序；items 依 `sort_order`。
 下載檔名使用 `Content-Disposition: attachment; filename*=UTF-8''<encodeURIComponent(name)>`。
 
 ## 拆帳報表（xlsx）
-1. **逐筆拆帳明細**：每位人員每個 step 一列：職員編號、姓名、投保別、步驟（`Step 0 本薪` / `Step N`）、薪資來源、本筆金額、累計薪資、投保級距、6 項保費差額、勞退自提、自提率、個人合計、學校合計。公健者同樣逐筆列出，投保別顯示「公健（只計健保）」，勞保三項與勞退欄為 0、健保兩項照算。每人之後加粗小計列。
-2. **薪資來源彙總**：依薪資來源名稱分組（本薪 = 所有 Step 0 diff 加總）：薪資來源、人次、薪資合計、6 項差額合計、個人合計、學校合計；最後一列總計。
-3. **人員彙總**：每人一列：職員編號、姓名、投保別、本薪、總薪資、最終級距、6 項保費（最終）。
+1. **逐筆拆帳明細**：每位人員每個 step 一列：職員編號、姓名、投保別、步驟（`Step 0 基準` / `Step N`）、薪資來源、本筆金額、累計薪資、投保級距、6 項保費差額、勞退自提、自提率、個人合計、學校合計。公健者同樣逐筆列出，投保別顯示「公健（只計健保）」，勞保三項與勞退欄為 0、健保兩項照算。每人之後加粗小計列。
+2. **薪資來源彙總**：依**實際薪資來源名稱**分組（Step 0 歸入其 base_source_name，與加項同名者合併）：薪資來源、人次、薪資合計、6 項差額合計、個人合計、學校合計；最後一列總計。
+3. **人員彙總**：每人一列：職員編號、姓名、投保別、基準來源、基準薪資、總薪資、最終級距、6 項保費（最終）。
 表頭粗體＋底色、凍結首列、金額千分位格式。
