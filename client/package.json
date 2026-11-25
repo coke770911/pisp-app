@@ -1,0 +1,25 @@
+{
+  "name": "hr-ins-split-client",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "HISP - 人事勞健保加退拆帳系統（前端）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p jsconfig.json"
+  },
+  "dependencies": {
+    "vue": "^3.5.46",
+    "vue-router": "^5.5.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@vitejs/plugin-vue": "^6.0.11",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.8",
+    "vue-tsc": "^3.3.14"
+  }
+}
